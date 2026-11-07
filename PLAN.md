@@ -163,6 +163,22 @@ listed under Phase 0 scope
 moves to Phase 1 — it belongs with the tracer that defines its tables.
 **Next: Phase 1 (spine)** — `run` with id, `run.phase()` context manager, pydantic envelope
 with same-session retry, events → SQLite WAL, CLI commands `sessions`/`phases`.
+
+**Phase 1 — CLOSED (2026-11-07).** Shipped: `factory/db.py` (SQLite WAL trace — `sessions`,
+`phases`, `events`, `envelopes` tables; cross-thread writes enabled for the streaming
+tracer), `factory/envelope.py` (pydantic `EnvelopeBase` / `RunOutput`, tolerant JSON
+extraction, the `## Report` contract rendered into every agent prompt), `factory/run.py`
+(`Run` + `run.phase()` context manager born `fail`; `call_agent` acceptance loop with
+same-session corrections via `--session-id {run_id}-{agent}` — never cold-restart),
+`factory/agent_pi.py::run_pi_streaming` (JSONL events piped live to the tracer from a pump
+thread), and the CLI: `factory run | sessions | phases | prompt`. A crashed or killed run
+settles its own trace to `failed`.
+Live verification: two runs accepted end-to-end (`105f2e60`, `ef4e28ef`); trace queryable
+via `factory sessions`, `factory phases <id>`, and direct SQLite (108 `pi_event` rows on
+the second run). 36 unit tests passing.
+**Next: Phase 2 (gates)** — `gates.py` (`artifacts_exist`, `diff_matches_claims`,
+`tests_pass`), the bounded correction loop wired to gate violations, and the `writes`
+boundary with rollback. Deliverable: `factory build-test "<prompt>"`.
 Deliverable: `factory run "<prompt>"` with a queryable trace.
 
 ## References
