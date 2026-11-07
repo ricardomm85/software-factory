@@ -29,14 +29,28 @@ class TestResult:
 def run_test_command(command: str, repo_dir: Path, timeout_s: int = 600) -> TestResult:
     """Run the repo's real test command. Placeholders that exit 0 are theater."""
     started = time.monotonic()
-    proc = subprocess.run(
-        shlex.split(command),
-        cwd=str(repo_dir),
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            shlex.split(command),
+            cwd=str(repo_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # A hung suite is a red result (exit 124), not a crash — the bounded
+        # rounds decide what happens next.
+        elapsed = int((time.monotonic() - started) * 1000)
+        tail = exc.stdout or ""
+        if isinstance(tail, bytes):
+            tail = tail.decode(errors="replace")
+        return TestResult(
+            exit_code=124,
+            output_tail=f"test command timed out after {timeout_s}s\n{str(tail)[-800:]}",
+            duration_ms=elapsed,
+            command=command,
+        )
     tail = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-2000:]
     return TestResult(
         exit_code=proc.returncode,
@@ -86,7 +100,9 @@ def run_build_test(
 
     try:
         for round_no in range(1, max_rounds + 1):
-            envelope = None
+            agent_declined = False
+            build_ok = False
+            tests_ok = False
             with run.phase(f"build:r{round_no}", kind="agent", owner=agent_cfg["name"]) as phase:
                 envelope = call_agent(
                     run,
@@ -97,14 +113,23 @@ def run_build_test(
                     agent_fn=agent_fn,
                     repo_dir=repo_dir,
                 )
-                reports = gate_reports(envelope, repo_dir)
-                phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
-                build_ok = all(r.passed for r in reports)
-                if not build_ok:
-                    violations = _violations(reports)
-                    if round_no < max_rounds:
-                        builder_prompt = f"{prompt}\n\n{_correction('gate_correction', violations='\\n'.join(violations))}"
+                if envelope.status != "success":
+                    # The agent decided the task is impossible — do not nag it
+                    # (Phase 1 contract: "the agent decided. Do not retry.").
+                    agent_declined = True
+                    reason = f"agent reported failure: {envelope.summary}"
+                    phase.log("agent_declined", {"summary": envelope.summary})
+                else:
+                    reports = gate_reports(envelope, repo_dir)
+                    phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
+                    build_ok = all(r.passed for r in reports)
+                    if not build_ok:
+                        violations = _violations(reports)
+                        if round_no < max_rounds:
+                            builder_prompt = f"{prompt}\n\n{_correction('gate_correction', violations='\\n'.join(violations))}"
 
+            if agent_declined:
+                break
             if not build_ok:
                 reason = f"gate violations in round {round_no}"
                 continue

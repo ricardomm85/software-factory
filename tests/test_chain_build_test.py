@@ -139,3 +139,29 @@ def test_exhausted_rounds_settle_failed(repo, tmp_path):
     rejection = conn.execute("SELECT payload FROM events WHERE type = 'run_rejected'").fetchone()
     assert rejection is not None and "round 2" in rejection[0]
     assert tests.runs == 2
+
+
+def test_agent_declined_stops_the_chain_without_nagging(repo, tmp_path):
+    fail_envelope = (
+        '{"status": "fail", "summary": "impossible: the repo has no test suite", '
+        '"artifacts": [], "changed_files": [], "commit_message": ""}'
+    )
+    builder = StubBuilder([fail_envelope])
+    tests = StubTests([])
+    conn = connect(tmp_path / "factory.db")
+    assert not run_build_test(
+        conn, "do the impossible", AGENT_CFG, test_command="true",
+        repo_dir=repo, agent_fn=builder, test_fn=tests,
+    )
+    assert len(builder.calls) == 1  # the agent decided — never re-prompted
+    assert tests.runs == 0          # nothing to test
+    declined = conn.execute("SELECT payload FROM events WHERE type = 'agent_declined'").fetchone()
+    assert declined is not None and "impossible" in declined[0]
+
+
+def test_run_test_command_timeout_is_a_red_result_not_a_crash(tmp_path):
+    from factory.chains import run_test_command
+
+    result = run_test_command("sleep 30", tmp_path, timeout_s=1)
+    assert result.exit_code == 124
+    assert "timed out" in result.output_tail

@@ -106,3 +106,28 @@ def test_declared_but_unchanged_is_note_not_failure(git_repo):
     report = diff_matches_claims(envelope(changed_files=["ghost.txt"]), git_repo)
     assert report.passed
     assert "ghost.txt" in report.checks[1].note
+
+
+def test_staged_rename_lists_both_sides_and_rollback_undoes_it(git_repo):
+    _git(git_repo, "mv", "README.md", "RENAMED.md")   # staged rename, nothing claimed
+    report = diff_matches_claims(envelope(changed_files=[]), git_repo, rollback=True)
+    assert not report.passed
+    assert (git_repo / "README.md").read_text() == "base\n"  # old side restored from HEAD
+    assert not (git_repo / "RENAMED.md").exists()            # new side (staged-new) removed
+
+
+def test_rollback_disabled_note_does_not_lie(git_repo):
+    (git_repo / "README.md").write_text("changed\n")
+    (git_repo / "rogue.txt").write_text("x\n")
+    report = diff_matches_claims(
+        envelope(changed_files=["README.md"]), git_repo, rollback=False
+    )
+    assert not report.passed
+    assert "rollback disabled" in report.checks[0].note
+    assert (git_repo / "rogue.txt").exists()          # still there — note told the truth
+
+
+def test_artifacts_outside_the_repo_are_rejected(tmp_path):
+    report = artifacts_exist(envelope(artifacts=["/etc/hostname"]), tmp_path)
+    assert not report.passed
+    assert "outside the repo" in report.checks[0].note
