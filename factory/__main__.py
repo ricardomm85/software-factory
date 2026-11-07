@@ -38,6 +38,18 @@ def _db_path(cfg: dict, config_path: Path) -> Path:
     return config_path.parent / data_dir / "factory.db"
 
 
+def _resolve_repo(args) -> tuple[Path, Path]:
+    """(repo_dir, config_dir): the repo agents work on, and where roster+secrets live.
+
+    They are the same place by default; ``--repo`` points the work at another
+    repository while the roster, ``.env`` and the trace stay at home.
+    """
+    config_dir = args.config.parent
+    repo_arg = getattr(args, "repo", None)
+    repo_dir = Path(repo_arg).resolve() if repo_arg else config_dir
+    return repo_dir, config_dir
+
+
 def _trace_exemptions(repo_dir: Path, db_path: Path) -> set[str]:
     """Trace db + WAL sidecars as repo-relative posix paths.
 
@@ -60,11 +72,12 @@ def _trace_exemptions(repo_dir: Path, db_path: Path) -> set[str]:
 def cmd_run(args) -> int:
     cfg = _load_config(args.config)
     agent = _resolve_agent(cfg, args.agent)
+    repo_dir, config_dir = _resolve_repo(args)
     conn = connect(_db_path(cfg, args.config))
-    run = Run.create(conn, request=args.prompt, agent=agent["name"], model=agent["model"])
+    run = Run.create(conn, request=args.prompt, agent=agent["name"], model=agent["model"], repo=str(repo_dir))
     print(
         f"run {run.id} started (agent={agent['name']}, model={agent['model']}, "
-        f"thinking={agent.get('thinking') or 'default'})"
+        f"thinking={agent.get('thinking') or 'default'}, repo={repo_dir})"
     )
     accepted = False
     try:
@@ -76,7 +89,8 @@ def cmd_run(args) -> int:
                 agent,
                 output_type=RunOutput,
                 max_attempts=args.max_attempts,
-                repo_dir=args.config.parent,
+                repo_dir=repo_dir,
+                env_dir=config_dir,
             )
             accepted = envelope.status == "success"
             reason = envelope.summary if envelope.status != "success" else ""
@@ -97,7 +111,7 @@ def cmd_run(args) -> int:
 def cmd_build_test(args) -> int:
     cfg = _load_config(args.config)
     agent = _resolve_agent(cfg, args.agent)
-    repo_dir = args.config.parent
+    repo_dir, config_dir = _resolve_repo(args)
     test_command = args.test_command or cfg["defaults"].get("test_command") or ""
     if not test_command.strip():
         print(
@@ -121,6 +135,7 @@ def cmd_build_test(args) -> int:
             repo_dir=repo_dir,
             max_rounds=args.max_rounds,
             exempt_paths=_trace_exemptions(repo_dir, _db_path(cfg, args.config)),
+            env_dir=config_dir,
         )
     except AgentPhaseError as exc:
         print(f"build-test FAILED: {exc}", file=sys.stderr)
@@ -132,7 +147,7 @@ def cmd_plan_build_test(args) -> int:
     cfg = _load_config(args.config)
     planner = _resolve_agent(cfg, args.planner)
     builder = _resolve_agent(cfg, args.builder)
-    repo_dir = args.config.parent
+    repo_dir, config_dir = _resolve_repo(args)
     test_command = args.test_command or cfg["defaults"].get("test_command") or ""
     if not test_command.strip():
         print(
@@ -159,6 +174,7 @@ def cmd_plan_build_test(args) -> int:
             max_rounds=args.max_rounds,
             checkpoint_fn=checkpoint_fn,
             exempt_paths=_trace_exemptions(repo_dir, _db_path(cfg, args.config)),
+            env_dir=config_dir,
         )
     except (AgentPhaseError, RuntimeError) as exc:
         print(f"plan-build-test FAILED: {exc}", file=sys.stderr)
@@ -185,7 +201,7 @@ def _require_clean_tree(repo_dir: Path) -> int:
 
 def cmd_build_review(args) -> int:
     cfg = _load_config(args.config)
-    repo_dir = args.config.parent
+    repo_dir, config_dir = _resolve_repo(args)
     lens_names = [name.strip() for name in args.lenses.split(",") if name.strip()]
     reviewers = [_resolve_agent(cfg, name) for name in lens_names]
     scorer = _resolve_agent(cfg, args.scorer)
@@ -202,6 +218,7 @@ def cmd_build_review(args) -> int:
             max_rounds=args.max_rounds,
             timeout_s=args.timeout,
             exempt_paths=_trace_exemptions(repo_dir, _db_path(cfg, args.config)),
+            env_dir=config_dir,
         )
     except (AgentPhaseError, OSError) as exc:
         # OSError covers a lens whose prompt template file is missing, and
@@ -268,12 +285,14 @@ def cmd_phases(args) -> int:
 def cmd_prompt(args) -> int:
     cfg = _load_config(args.config)
     agent = _resolve_agent(cfg, args.agent)
+    repo_dir, config_dir = _resolve_repo(args)
     result = run_pi(
         args.prompt,
         model=agent["model"],
         thinking=agent.get("thinking"),
         mode=args.mode,
-        repo_dir=args.config.parent,
+        repo_dir=repo_dir,
+        env_dir=config_dir,
     )
     if args.mode == "json":
         sys.stdout.write(result.stdout)
@@ -292,6 +311,10 @@ def main(argv: list[str] | None = None) -> int:
         prog="factory", description="Personal software factory orchestrator."
     )
     parser.add_argument("--config", type=Path, default=Path("config.yaml"), help="Roster config path")
+    parser.add_argument(
+        "--repo", type=Path, default=None,
+        help="Target repository the agents work on (default: the roster's own directory)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_run = sub.add_parser("run", help="one agent phase inside a traced run")
@@ -299,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--agent", default=None, help="Agent name from the roster")
     p_run.add_argument("--max-attempts", type=int, default=3, help="Envelope retries in the same session")
     p_run.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
+    p_run.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="Target repository")
     p_run.set_defaults(func=cmd_run)
 
     p_bt = sub.add_parser("build-test", help="builder + code(test) with a bounded fix loop")
@@ -307,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--test-command", default=None, help="Override the roster's test_command")
     p_bt.add_argument("--max-rounds", type=int, default=3, help="Bounded fix rounds")
     p_bt.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
+    p_bt.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="Target repository")
     p_bt.set_defaults(func=cmd_build_test)
 
     p_pbt = sub.add_parser(
@@ -325,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Ask before the final commit lands (default: defaults.checkpoint in the roster)",
     )
     p_pbt.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
+    p_pbt.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="Target repository")
     p_pbt.set_defaults(func=cmd_plan_build_test)
 
     p_br = sub.add_parser(
@@ -341,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
     p_br.add_argument("--max-rounds", type=int, default=2, help="Bounded review→fix rounds")
     p_br.add_argument("--timeout", type=int, default=600, help="Per-invocation agent timeout in seconds")
     p_br.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
+    p_br.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="Target repository")
     p_br.set_defaults(func=cmd_build_review)
 
     p_ui = sub.add_parser(
@@ -366,6 +393,7 @@ def main(argv: list[str] | None = None) -> int:
     p_prompt.add_argument("--agent", default=None)
     p_prompt.add_argument("--mode", choices=["print", "json"], default="print")
     p_prompt.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
+    p_prompt.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="Target repository")
     p_prompt.set_defaults(func=cmd_prompt)
 
     args = parser.parse_args(argv)

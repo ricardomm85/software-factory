@@ -15,7 +15,7 @@ from factory.ui import fmt_duration, make_handler, render_index, render_run, ui_
 
 def seed(conn) -> str:
     """One finished run: a passing agent phase with streaming, a failed review phase."""
-    run = Run.create(conn, request="ship the <b>bold</b> feature", agent="builder", model="m-1")
+    run = Run.create(conn, request="ship the <b>bold</b> feature", agent="builder", model="m-1", repo="/tmp/target")
     with run.phase(name="build", kind="agent", owner="builder") as phase:
         phase.log("attempt", {"attempt": 1, "session_id": "r1-builder"})
         phase.log("pi_event", {"type": "tool_call", "name": "write"})
@@ -45,6 +45,7 @@ def test_index_lists_runs_and_escapes_html(traced_db):
     assert run_id in page and "accepted" in page
     assert "&lt;b&gt;bold&lt;/b&gt;" in page          # request text is escaped
     assert "<b>bold</b>" not in page                  # nothing raw survives
+    assert "/tmp/target" in page                      # the repo column shows the target
 
 
 def test_run_page_waterfall_errors_and_pi_counts(traced_db):
@@ -211,6 +212,33 @@ def test_render_error_becomes_a_page_not_a_drop(traced_db, monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_legacy_db_without_repo_column_still_renders(tmp_path):
+    """Pre-decoupling traces have no sessions.repo; the read-only UI never migrates
+    (query_only), so both pages must render legacy rows without a repo field."""
+    db_path = tmp_path / "legacy.db"
+    legacy = sqlite3.connect(db_path)
+    legacy.executescript(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, request TEXT NOT NULL,"
+        " status TEXT NOT NULL DEFAULT 'running', agent TEXT, model TEXT,"
+        " started_at TEXT NOT NULL, ended_at TEXT);"
+        "CREATE TABLE phases (id INTEGER PRIMARY KEY, run_id TEXT, seq INT, name TEXT,"
+        " kind TEXT, owner TEXT, status TEXT, started_at TEXT, ended_at TEXT, error TEXT);"
+        "CREATE TABLE events (id INTEGER PRIMARY KEY, run_id TEXT, created_at TEXT,"
+        " type TEXT, payload TEXT);"
+        "INSERT INTO sessions (id, request, status, agent, model, started_at, ended_at)"
+        " VALUES ('old', 'legacy request', 'accepted', 'a', 'm',"
+        " '2026-01-01T00:00:00+00:00', '2026-01-01T00:01:00+00:00');"
+    )
+    legacy.commit()
+    legacy.close()
+
+    conn = ui_connect(db_path)
+    index = render_index(conn)              # raised IndexError before the fix
+    assert "old" in index and "legacy request" in index
+    page, code = render_run(conn, "old")    # ditto
+    assert code == 200 and "legacy request" in page
 
 
 def test_main_rejects_out_of_range_port(tmp_path):

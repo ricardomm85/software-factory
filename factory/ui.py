@@ -84,6 +84,15 @@ def run_detail(conn: sqlite3.Connection, run_id: str):
     return run, phases, events
 
 
+def _col(row: sqlite3.Row, key: str, default=""):
+    """Row value for ``key``, or ``default`` on legacy dbs lacking the column.
+
+    The UI opens the db ``query_only`` and never migrates, so traces written
+    before the ``sessions.repo`` column existed must still render.
+    """
+    return row[key] if key in row.keys() else default
+
+
 def duration_seconds(started_at, ended_at) -> float | None:
     """Seconds between two ISO timestamps; None when either is missing/invalid."""
     try:
@@ -157,6 +166,7 @@ def render_index(conn: sqlite3.Connection) -> str:
             f"<td>{_badge(r['status'])}</td>"
             f"<td>{_esc(r['agent'] or '-')}</td><td class='muted'>{_esc(r['model'] or '-')}</td>"
             f"<td>{_esc(_short(r['request']))}</td>"
+            f"<td class='muted'>{_esc(_short(_col(r, 'repo') or '-', 40))}</td>"
             f"<td>{r['n_phases']}</td><td>{r['n_events']}</td>"
             f"<td class='muted'>{_esc(r['started_at'])}</td>"
             f"<td>{_esc(fmt_duration(r['started_at'], r['ended_at']))}</td>"
@@ -164,7 +174,7 @@ def render_index(conn: sqlite3.Connection) -> str:
         )
     table = (
         "<table><tr><th>run</th><th>status</th><th>agent</th><th>model</th><th>request</th>"
-        "<th>phases</th><th>events</th><th>started (UTC)</th><th>took</th></tr>"
+        "<th>repo</th><th>phases</th><th>events</th><th>started (UTC)</th><th>took</th></tr>"
         + "".join(body_rows)
         + "</table>"
         if rows
@@ -185,7 +195,10 @@ def render_run(conn: sqlite3.Connection, run_id: str) -> tuple[str, int]:
         f"<p><strong>request</strong></p><pre>{_esc(run['request'])}</pre>"
         f"<p>{_badge(run['status'])} &nbsp; agent <strong>{_esc(run['agent'] or '-')}</strong>"
         f" · model <span class='muted'>{_esc(run['model'] or '-')}</span>"
-        f" · started {_esc(run['started_at'])} UTC"
+        + (
+            f" · repo <code>{_esc(_short(_col(run, 'repo'), 60))}</code>" if _col(run, "repo") else ""
+        )
+        + f" · started {_esc(run['started_at'])} UTC"
         + (f" · took {fmt_duration(run['started_at'], run['ended_at'])}" if run["ended_at"] else "")
         + "</p></div>"
     )
