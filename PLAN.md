@@ -276,7 +276,7 @@ the real trace: index and run pages render Phases 1–4 history correctly
 
 Dogfood: the factory reviewed its own UI diff with `factory build-review` —
 "no findings scored >=50". The deferred half of Phase 5 (human checkpoints pre-commit)
-stays on the §9 list.
+shipped in the Phase 5b note below.
 
 ### Phase 5b closure note — human checkpoints + a live-surfaced trace bug (added 2026-11-07)
 
@@ -284,9 +284,11 @@ stays on the §9 list.
 `--no-checkpoint` overrides): before the final commit lands, a `checkpoint` phase
 (owner `human`) shows the pending changes (status + diffstat) and asks
 `commit these changes? [y/N]` at stdin. Declining raises `CheckpointDeclined` — the run
-settles rejected and the working tree is left uncommitted for the human to dispose of.
+settles as failed (the trace's rejection state is `failed`) and the working tree is left
+uncommitted for the human to dispose of.
 No TTY attached refuses too: a checkpoint that silently approves itself would be theater.
-Request and decision are both in the trace. 89 tests passing (5 checkpoint + 1 boundary).
+Request and decision are both in the trace. 93 tests passing (5 checkpoint + 1 boundary + 4
+exemption-helper).
 
 The live smoke then surfaced a real factory bug: in a target repo without a
 `.gitignore`, the writes boundary's rollback (`git clean`) treated `data/factory.db`

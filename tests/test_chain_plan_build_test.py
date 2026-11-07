@@ -260,7 +260,14 @@ def test_trace_db_survives_gates_and_stays_out_of_commits(repo, tmp_path):
     or land it in the user's history. It must survive both, intact and readable."""
     db_path = repo / "data" / "factory.db"           # the trace lives INSIDE the target repo
     conn = connect(db_path)
-    exempt = {"data/factory.db", "data/factory.db-wal", "data/factory.db-shm"}
+    from factory.__main__ import _trace_exemptions
+    exempt = _trace_exemptions(repo, db_path)        # the real helper, not a hand copy
+    assert exempt == {"data/factory.db", "data/factory.db-wal", "data/factory.db-shm"}
+
+    def approve(pending):
+        # the trace plumbing must never be shown as something the human approves
+        assert "data/factory.db" not in pending
+        return True
 
     def approve(pending):
         return True

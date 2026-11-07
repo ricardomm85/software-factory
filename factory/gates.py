@@ -107,10 +107,10 @@ def diff_matches_claims(
     Unclaimed changes are rolled back (tracked files restored, untracked files
     removed) when ``rollback=True`` — the check verifies the git operations
     actually succeeded instead of asserting they did. Paths in ``allow`` are
-    exempt from the unclaimed check: they were already dirty before the agent
-    ran (the user's own WIP) and must survive the rollback untouched.
-    Declared-but-unchanged files are a warning note, not a failure — agents may
-    reconsider a plan mid-flight.
+    exempt from the unclaimed check — either the user's own pre-existing WIP or
+    factory infrastructure (the trace db and its WAL sidecars) — and must
+    survive the rollback untouched. Declared-but-unchanged files are a warning
+    note, not a failure — agents may reconsider a plan mid-flight.
     """
     claimed = set(envelope.changed_files)
     exempt = allow or set()

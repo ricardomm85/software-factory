@@ -47,9 +47,14 @@ class CheckpointDeclined(RuntimeError):
     """The human said no at a pre-commit checkpoint (or none was there to ask)."""
 
 
-def _pending_changes_summary(repo_dir: Path, max_chars: int = 4000) -> str:
-    """What would land in the next commit: status lines plus a diffstat."""
+def _pending_changes_summary(
+    repo_dir: Path, max_chars: int = 4000, exempt_paths: set[str] | None = None
+) -> str:
+    """What the human is about to approve: status lines plus a diffstat, minus
+    factory plumbing (exempt paths never land in the commit)."""
     status = _git("status", "--porcelain", repo_dir=repo_dir).stdout
+    if exempt_paths:
+        status = "\n".join(l for l in status.splitlines() if l[3:] not in exempt_paths)
     diffstat = _git("diff", "--stat", "HEAD", repo_dir=repo_dir).stdout
     body = f"pending changes:\n{status}\n{diffstat}".strip()
     if len(body) > max_chars:
@@ -65,7 +70,11 @@ def _stdin_checkpoint(pending: str) -> bool:
             "checkpoint requested but stdin is not a TTY — no human to ask"
         )
     print(f"\n{pending}")
-    answer = input("commit these changes? [y/N] ").strip().lower()
+    try:
+        answer = input("commit these changes? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt) as exc:
+        # No answer is no approval: Ctrl-D / Ctrl-C at the prompt declines.
+        raise CheckpointDeclined(f"no answer at the checkpoint prompt ({type(exc).__name__})") from exc
     return answer in ("y", "yes")
 
 
@@ -114,9 +123,15 @@ def gate_reports(
 
 
 def unstage_paths(paths: set[str] | None, repo_dir: Path) -> None:
-    """Keep factory infrastructure (the trace db) out of the user's commits."""
+    """Keep factory infrastructure (the trace db) out of the user's commits.
+
+    A failed unstage is fatal, not best-effort: silently skipping it would land
+    the trace db in the user's history — the exact failure this exists to prevent.
+    """
     if paths:
-        _git("reset", "-q", "--", *sorted(paths), repo_dir=repo_dir)
+        res = _git("reset", "-q", "--", *sorted(paths), repo_dir=repo_dir)
+        if res.returncode != 0:
+            raise RuntimeError(f"unstage failed: {(res.stderr or '').strip()[:300]}")
 
 
 def _violations(reports: list[GateReport]) -> list[str]:
@@ -357,7 +372,7 @@ def run_plan_build_test(
                 # The human owns the last word: what would land is shown, and only
                 # an explicit approval commits. A decline leaves the tree as-is.
                 with run.phase("checkpoint", kind="code", owner="human") as phase:
-                    pending = _pending_changes_summary(repo_dir)
+                    pending = _pending_changes_summary(repo_dir, exempt_paths=exempt_paths)
                     phase.log("checkpoint_request", {"pending": pending})
                     if not checkpoint_fn(pending):
                         phase.log("checkpoint_declined", {})
