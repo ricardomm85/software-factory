@@ -6,6 +6,7 @@ defaults:
   thinking: medium                 # off|minimal|low|medium|high|xhigh|max — quote 'off' (YAML parses bare off/on as booleans)
   data_dir: data                   # runtime trace + sessions (gitignored)
   test_command: uv run pytest -q   # the real suite for code(test) phases — never a placeholder
+  checkpoint: false                # ask the human before the final commit lands (plan-build-test)
 
 agents:
   - name: scout

@@ -5,10 +5,14 @@ Phase 3: ``run_plan_build_test`` — the standard chain: planner writes a plan,
 code hands it off and commits it, the builder implements it inside the same
 gated build→test loop, and code makes the final commit with the builder's
 proposed message. The agent never runs git itself.
+Phase 5: ``run_plan_build_test(checkpoint_fn=...)`` — an optional human
+checkpoint before the final commit: the pending changes are shown, and only
+an explicit approval lands them. No human attached means the checkpoint fails.
 """
 
 import shlex
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +41,41 @@ def _git(*args: str, repo_dir: Path):
     return subprocess.run(
         ["git", *args], cwd=str(repo_dir), capture_output=True, text=True, check=False
     )
+
+
+class CheckpointDeclined(RuntimeError):
+    """The human said no at a pre-commit checkpoint (or none was there to ask)."""
+
+
+def _pending_changes_summary(
+    repo_dir: Path, max_chars: int = 4000, exempt_paths: set[str] | None = None
+) -> str:
+    """What the human is about to approve: status lines plus a diffstat, minus
+    factory plumbing (exempt paths never land in the commit)."""
+    status = _git("status", "--porcelain", repo_dir=repo_dir).stdout
+    if exempt_paths:
+        status = "\n".join(l for l in status.splitlines() if l[3:] not in exempt_paths)
+    diffstat = _git("diff", "--stat", "HEAD", repo_dir=repo_dir).stdout
+    body = f"pending changes:\n{status}\n{diffstat}".strip()
+    if len(body) > max_chars:
+        return f"{body[:max_chars]}\n[... truncated, {len(body) - max_chars} chars omitted ...]"
+    return body
+
+
+def _stdin_checkpoint(pending: str) -> bool:
+    """Ask the human at stdin. Refuses when no human is attached — a checkpoint
+    that silently approves itself would be theater."""
+    if not sys.stdin.isatty():
+        raise CheckpointDeclined(
+            "checkpoint requested but stdin is not a TTY — no human to ask"
+        )
+    print(f"\n{pending}")
+    try:
+        answer = input("commit these changes? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt) as exc:
+        # No answer is no approval: Ctrl-D / Ctrl-C at the prompt declines.
+        raise CheckpointDeclined(f"no answer at the checkpoint prompt ({type(exc).__name__})") from exc
+    return answer in ("y", "yes")
 
 
 def run_test_command(command: str, repo_dir: Path, timeout_s: int = 600) -> TestResult:
@@ -73,12 +112,26 @@ def run_test_command(command: str, repo_dir: Path, timeout_s: int = 600) -> Test
     )
 
 
-def gate_reports(envelope: BuildOutput, repo_dir: Path, allow: set[str] | None = None) -> list[GateReport]:
+def gate_reports(
+    envelope: BuildOutput, repo_dir: Path, allow: set[str] | None = None
+) -> list[GateReport]:
     return [
         run_output_gate(envelope),
         artifacts_exist(envelope, repo_dir),
         diff_matches_claims(envelope, repo_dir, rollback=True, allow=allow),
     ]
+
+
+def unstage_paths(paths: set[str] | None, repo_dir: Path) -> None:
+    """Keep factory infrastructure (the trace db) out of the user's commits.
+
+    A failed unstage is fatal, not best-effort: silently skipping it would land
+    the trace db in the user's history — the exact failure this exists to prevent.
+    """
+    if paths:
+        res = _git("reset", "-q", "--", *sorted(paths), repo_dir=repo_dir)
+        if res.returncode != 0:
+            raise RuntimeError(f"unstage failed: {(res.stderr or '').strip()[:300]}")
 
 
 def _violations(reports: list[GateReport]) -> list[str]:
@@ -101,11 +154,14 @@ def _build_test_rounds(
     max_rounds: int,
     agent_fn,
     test_fn,
+    exempt_paths: set[str] | None = None,
 ) -> tuple[bool, str, BuildOutput | None]:
     """Bounded build→test rounds. Returns (accepted, reason, final envelope).
 
     The caller owns the run lifecycle (create and finish) — this helper never
     settles the run, so a crash propagates and the wrapper decides.
+    ``exempt_paths`` (factory infrastructure like the trace db) never counts as
+    agent debris and is never rolled back.
     """
     builder_prompt = prompt
     accepted = False
@@ -134,7 +190,7 @@ def _build_test_rounds(
                 reason = f"agent reported failure: {envelope.summary}"
                 phase.log("agent_declined", {"summary": envelope.summary})
             else:
-                reports = gate_reports(envelope, repo_dir)
+                reports = gate_reports(envelope, repo_dir, allow=exempt_paths)
                 phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
                 build_ok = all(r.passed for r in reports)
                 if not build_ok:
@@ -181,15 +237,18 @@ def run_build_test(
     max_rounds: int = 3,
     agent_fn=run_pi_streaming,
     test_fn=run_test_command,
+    exempt_paths: set[str] | None = None,
 ) -> bool:
     """Builder + code(test) with bounded rounds. Returns whether the run was accepted.
 
     The run settles its own trace on any failure — no orphaned 'running' rows.
+    ``exempt_paths`` never counts as agent debris and is never rolled back.
     """
     run = Run.create(conn, request=f"build-test: {prompt}", agent=agent_cfg["name"], model=agent_cfg["model"])
     try:
         accepted, reason, _ = _build_test_rounds(
-            run, prompt, agent_cfg, test_command, repo_dir, max_rounds, agent_fn, test_fn
+            run, prompt, agent_cfg, test_command, repo_dir, max_rounds, agent_fn, test_fn,
+            exempt_paths=exempt_paths,
         )
     except BaseException as exc:
         run.finish(accepted=False, reason=f"{type(exc).__name__}: {exc}")
@@ -208,13 +267,20 @@ def run_plan_build_test(
     max_rounds: int = 3,
     agent_fn=run_pi_streaming,
     test_fn=run_test_command,
+    checkpoint_fn=None,
+    exempt_paths: set[str] | None = None,
 ) -> tuple[bool, str]:
     """The standard chain: plan → plan gates → handoff → commit:plan → build/test rounds
-    → commit.
+    → checkpoint → commit.
 
     Lands the planner's plan commit and the builder's implementation commit (carrying the
     builder's proposed message) when the planner ships a plan file; degrades to a single
-    implementation commit when it doesn't. Returns (accepted, reason).
+    implementation commit when it doesn't. ``checkpoint_fn`` (Phase 5) gates the final
+    commit behind a human: it receives the pending-changes summary and returns approval;
+    declining raises :class:`CheckpointDeclined` with the working tree left uncommitted
+    for the human to dispose of. ``exempt_paths`` (the trace db and its WAL sidecars)
+    is factory infrastructure: never agent debris, never rolled back, never committed.
+    Returns (accepted, reason).
     """
     run = Run.create(
         conn, request=f"plan-build-test: {request}", agent=planner_cfg["name"], model=planner_cfg["model"]
@@ -249,7 +315,7 @@ def run_plan_build_test(
             reports = [
                 run_output_gate(plan_claim),
                 artifacts_exist(plan_claim, repo_dir),
-                diff_matches_claims(plan_claim, repo_dir, rollback=True),
+                diff_matches_claims(plan_claim, repo_dir, rollback=True, allow=exempt_paths),
             ]
             phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
         # A missing/empty plan kills the chain (the builder has nothing to implement).
@@ -276,8 +342,10 @@ def run_plan_build_test(
             phase.log("handoff", {"plan_path": plan_rel, "chars": len(plan_text)})
 
         # Commit:plan — the plan lands as its own commit before any code moves.
+        # The trace db stays out of the user's history (unstaged after add -A).
         if plan_rel:
             add_res = _git("add", "-A", repo_dir=repo_dir)
+            unstage_paths(exempt_paths, repo_dir)
             plan_message = f"factory({run.id}): plan — {plan_envelope.summary[:60]}"
             commit_res = _git("commit", "-m", plan_message, repo_dir=repo_dir)
             if add_res.returncode != 0 or commit_res.returncode != 0:
@@ -292,14 +360,28 @@ def run_plan_build_test(
             "builder_handoff", request=request, planner=planner_cfg["name"], plan_text=plan_text
         )
         accepted, reason, build_envelope = _build_test_rounds(
-            run, builder_prompt, builder_cfg, test_command, repo_dir, max_rounds, agent_fn, test_fn
+            run, builder_prompt, builder_cfg, test_command, repo_dir, max_rounds, agent_fn, test_fn,
+            exempt_paths=exempt_paths,
         )
 
         if accepted:
             message = (build_envelope.commit_message if build_envelope else "").strip()
             if not message:
                 message = f"factory({run.id}): {(build_envelope.summary if build_envelope else 'implementation')[:80]}"
+            if checkpoint_fn is not None:
+                # The human owns the last word: what would land is shown, and only
+                # an explicit approval commits. A decline leaves the tree as-is.
+                with run.phase("checkpoint", kind="code", owner="human") as phase:
+                    pending = _pending_changes_summary(repo_dir, exempt_paths=exempt_paths)
+                    phase.log("checkpoint_request", {"pending": pending})
+                    if not checkpoint_fn(pending):
+                        phase.log("checkpoint_declined", {})
+                        raise CheckpointDeclined(
+                            "declined at the pre-commit checkpoint — changes left uncommitted"
+                        )
+                    phase.log("checkpoint_decision", {"approved": True})
             add_res = _git("add", "-A", repo_dir=repo_dir)
+            unstage_paths(exempt_paths, repo_dir)
             commit_res = _git("commit", "-m", message, repo_dir=repo_dir)
             if add_res.returncode != 0 or commit_res.returncode != 0:
                 raise RuntimeError(
@@ -316,12 +398,19 @@ def run_plan_build_test(
     return accepted, reason
 
 
-def _working_tree_diff(repo_dir: Path, max_chars: int = 80000) -> str:
-    """The full working-tree diff vs HEAD — the material every reviewer reads."""
+def _working_tree_diff(repo_dir: Path, max_chars: int = 80000, exempt_paths: set[str] | None = None) -> str:
+    """The full working-tree diff vs HEAD — the material every reviewer reads.
+
+    ``exempt_paths`` (factory infrastructure like the trace db) never enters a
+    reviewer's context: it is untracked plumbing, not work under review.
+    """
     res = _git("diff", "HEAD", repo_dir=repo_dir)
     untracked = _git("ls-files", "--others", "--exclude-standard", repo_dir=repo_dir)
     body = res.stdout
+    skip = exempt_paths or set()
     for path in untracked.stdout.splitlines():
+        if path in skip:
+            continue
         p = repo_dir / path
         if p.is_file():
             body += f"\n--- NEW FILE: {path} ---\n{p.read_text(encoding='utf-8', errors='replace')}\n"
@@ -350,21 +439,24 @@ def run_build_review(
     max_rounds: int = 2,
     agent_fn=run_pi_streaming,
     timeout_s: int = 600,
+    exempt_paths: set[str] | None = None,
 ) -> tuple[bool, str]:
     """Multi-lens review of the working-tree changes: reviewers → scorer → gate (>=50
     blocks) → bounded fix rounds with the fixer, re-reviewed each round.
 
     The user's own WIP (dirty at chain start) is exempt from the fixer's rollback —
     reviewers see it, but only verified findings get fixed, and only by the fixer's
-    claimed changes. Returns (accepted, reason).
+    claimed changes. ``exempt_paths`` (the trace db) is invisible to reviewers and
+    survives the fixer's rollback. Returns (accepted, reason).
     """
     run = Run.create(conn, request="build-review: working-tree changes", agent=reviewer_cfgs[0]["name"], model=reviewer_cfgs[0]["model"])
     baseline = set(changed_files(repo_dir))  # the user's WIP — exempt from rollback
+    fixer_allow = baseline | (exempt_paths or set())
     accepted = False
     reason = ""
     try:
         for round_no in range(1, max_rounds + 1):
-            diff = _working_tree_diff(repo_dir)
+            diff = _working_tree_diff(repo_dir, exempt_paths=exempt_paths)
             if not diff.strip():
                 run.finish(accepted=True, reason="no changes to review")
                 return True, "no changes to review"
@@ -423,7 +515,7 @@ def run_build_review(
                         output_type=BuildOutput, agent_fn=agent_fn, repo_dir=repo_dir,
                         timeout_s=timeout_s,
                     )
-                    reports = gate_reports(fix_envelope, repo_dir, allow=baseline)
+                    reports = gate_reports(fix_envelope, repo_dir, allow=fixer_allow)
                     phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
                     if all(r.passed for r in reports):
                         break
