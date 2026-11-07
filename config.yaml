@@ -17,3 +17,15 @@ agents:
 
   - name: builder
     purpose: Implement the plan; propose a commit message; leave only what the plan allows.
+
+  - name: review-conventions
+    thinking: medium
+    purpose: Audit changes against AGENTS.md conventions and the repo's stated rules.
+
+  - name: review-bugs
+    thinking: high
+    purpose: Hunt real bugs in the changes — large defects only, no nitpicks.
+
+  - name: scorer
+    thinking: medium
+    purpose: Verify reported findings against the code and score 0-100 confidence they are real.

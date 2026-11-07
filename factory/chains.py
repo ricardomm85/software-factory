@@ -14,9 +14,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .agent_pi import run_pi_streaming
-from .envelope import PROMPTS_DIR, BuildOutput, PlanOutput
-from .gates import GateReport, artifacts_exist, diff_matches_claims, run_output_gate
-from .run import Run, call_agent
+from .envelope import (
+    PROMPTS_DIR,
+    BuildOutput,
+    FindingsOutput,
+    PlanOutput,
+    ScoredOutput,
+)
+from .gates import GateReport, artifacts_exist, changed_files, diff_matches_claims, run_output_gate
+from .run import Run, call_agent, json_dumps
 
 
 @dataclass
@@ -67,11 +73,11 @@ def run_test_command(command: str, repo_dir: Path, timeout_s: int = 600) -> Test
     )
 
 
-def gate_reports(envelope: BuildOutput, repo_dir: Path) -> list[GateReport]:
+def gate_reports(envelope: BuildOutput, repo_dir: Path, allow: set[str] | None = None) -> list[GateReport]:
     return [
         run_output_gate(envelope),
         artifacts_exist(envelope, repo_dir),
-        diff_matches_claims(envelope, repo_dir, rollback=True),
+        diff_matches_claims(envelope, repo_dir, rollback=True, allow=allow),
     ]
 
 
@@ -302,6 +308,125 @@ def run_plan_build_test(
             sha = _git("rev-parse", "--short", "HEAD", repo_dir=repo_dir).stdout.strip()
             with run.phase("commit", kind="code", owner="git") as phase:
                 phase.log("commit", {"sha": sha, "message": message})
+    except BaseException as exc:
+        run.finish(accepted=False, reason=f"{type(exc).__name__}: {exc}")
+        raise
+
+    run.finish(accepted=accepted, reason=reason)
+    return accepted, reason
+
+
+def _working_tree_diff(repo_dir: Path, max_chars: int = 80000) -> str:
+    """The full working-tree diff vs HEAD — the material every reviewer reads."""
+    res = _git("diff", "HEAD", repo_dir=repo_dir)
+    untracked = _git("ls-files", "--others", "--exclude-standard", repo_dir=repo_dir)
+    body = res.stdout
+    for path in untracked.stdout.splitlines():
+        p = repo_dir / path
+        if p.is_file():
+            body += f"\n--- NEW FILE: {path} ---\n{p.read_text(encoding='utf-8', errors='replace')}\n"
+    if len(body) > max_chars:
+        head = body[: max_chars // 2]
+        tail = body[-max_chars // 4 :]
+        body = f"{head}\n\n[... diff truncated, {len(body) - max_chars} chars omitted ...]\n\n{tail}"
+    return body
+
+
+def _review_prompt(agent_name: str, diff: str) -> str:
+    # roster name review-conventions -> template review_conventions.md
+    lens = agent_name.replace("review-", "", 1).replace("-", "_")
+    template = (PROMPTS_DIR / f"review_{lens}.md").read_text(encoding="utf-8")
+    return template.replace("{{diff}}", diff)
+
+
+def run_build_review(
+    conn,
+    repo_dir: Path,
+    reviewer_cfgs: list[dict],
+    scorer_cfg: dict,
+    fixer_cfg: dict,
+    max_rounds: int = 2,
+    agent_fn=run_pi_streaming,
+    timeout_s: int = 600,
+) -> tuple[bool, str]:
+    """Multi-lens review of the working-tree changes: reviewers → scorer → gate (>=50
+    blocks) → bounded fix rounds with the fixer, re-reviewed each round.
+
+    The user's own WIP (dirty at chain start) is exempt from the fixer's rollback —
+    reviewers see it, but only verified findings get fixed, and only by the fixer's
+    claimed changes. Returns (accepted, reason).
+    """
+    run = Run.create(conn, request="build-review: working-tree changes", agent=reviewer_cfgs[0]["name"], model=reviewer_cfgs[0]["model"])
+    baseline = set(changed_files(repo_dir))  # the user's WIP — exempt from rollback
+    accepted = False
+    reason = ""
+    try:
+        for round_no in range(1, max_rounds + 1):
+            diff = _working_tree_diff(repo_dir)
+            if not diff.strip():
+                run.finish(accepted=True, reason="no changes to review")
+                return True, "no changes to review"
+
+            findings: list[dict] = []
+            for rcfg in reviewer_cfgs:
+                with run.phase(f"review:{rcfg['name']}:r{round_no}", kind="agent", owner=rcfg["name"]) as phase:
+                    env = call_agent(
+                        run, phase, _review_prompt(rcfg["name"], diff), rcfg,
+                        output_type=FindingsOutput, agent_fn=agent_fn, repo_dir=repo_dir,
+                        timeout_s=timeout_s,
+                    )
+                    phase.log("findings", {"count": len(env.findings)})
+                    findings.extend(f.model_dump() for f in env.findings)
+
+            with run.phase(f"score:r{round_no}", kind="agent", owner=scorer_cfg["name"]) as phase:
+                score_prompt = _correction(
+                    "score_findings",
+                    findings=json_dumps({"issues": findings}),
+                    diff=diff,
+                )
+                scored = call_agent(
+                    run, phase, score_prompt, scorer_cfg,
+                    output_type=ScoredOutput, agent_fn=agent_fn, repo_dir=repo_dir,
+                )
+                phase.log("scored", {"count": len(scored.findings)})
+
+            blocked = [f for f in scored.findings if f.score >= 50]
+            with run.phase(f"gate:r{round_no}", kind="code", owner="code") as phase:
+                phase.log(
+                    "review_gate",
+                    {"total": len(scored.findings), "blocked": len(blocked), "threshold": 50},
+                )
+                gate_ok = not blocked
+
+            if gate_ok:
+                accepted = True
+                reason = "no findings scored >=50"
+                break
+            if round_no == max_rounds:
+                reason = f"{len(blocked)} findings scored >=50 after final round: " + "; ".join(
+                    f"{f.file}:{f.line} {f.description[:80]} (score {f.score})" for f in blocked
+                )
+                break
+
+            findings_json = json_dumps({"issues": [f.model_dump() for f in blocked]})
+            with run.phase(f"fix:r{round_no}", kind="agent", owner=fixer_cfg["name"]) as phase:
+                fix_prompt = _correction("fix_findings", findings=findings_json, diff=diff[:40000])
+                call_agent(
+                    run, phase, fix_prompt, fixer_cfg,
+                    output_type=BuildOutput, agent_fn=agent_fn, repo_dir=repo_dir,
+                )
+                claims = set(changed_files(repo_dir)) - baseline
+                fix_envelope = BuildOutput(
+                    status="success",
+                    summary="applied review fixes",
+                    artifacts=[],
+                    changed_files=sorted(claims),
+                )
+                reports = gate_reports(fix_envelope, repo_dir, allow=baseline)
+                phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
+                for report in reports:
+                    if not report.passed:
+                        run.log_event(phase.id, "fix_gate_violations", report.to_payload())
     except BaseException as exc:
         run.finish(accepted=False, reason=f"{type(exc).__name__}: {exc}")
         raise

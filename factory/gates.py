@@ -99,18 +99,23 @@ def artifacts_exist(envelope: EnvelopeBase, repo_dir: Path) -> GateReport:
     return GateReport("artifacts_exist", checks)
 
 
-def diff_matches_claims(envelope: EnvelopeBase, repo_dir: Path, rollback: bool = False) -> GateReport:
+def diff_matches_claims(
+    envelope: EnvelopeBase, repo_dir: Path, rollback: bool = False, allow: set[str] | None = None
+) -> GateReport:
     """Every actually-changed file must be declared in ``changed_files``.
 
     Unclaimed changes are rolled back (tracked files restored, untracked files
     removed) when ``rollback=True`` — the check verifies the git operations
-    actually succeeded instead of asserting they did. Declared-but-unchanged
-    files are a warning note, not a failure — agents may reconsider a plan
-    mid-flight.
+    actually succeeded instead of asserting they did. Paths in ``allow`` are
+    exempt from the unclaimed check: they were already dirty before the agent
+    ran (the user's own WIP) and must survive the rollback untouched.
+    Declared-but-unchanged files are a warning note, not a failure — agents may
+    reconsider a plan mid-flight.
     """
     claimed = set(envelope.changed_files)
+    exempt = allow or set()
     pre = set(changed_files(repo_dir))
-    unclaimed = sorted(pre - claimed)
+    unclaimed = sorted((pre - claimed) - exempt)
 
     rollback_errors: list[str] = []
     if unclaimed and rollback:
@@ -145,6 +150,8 @@ def diff_matches_claims(envelope: EnvelopeBase, repo_dir: Path, rollback: bool =
             if rollback
             else f"unclaimed changes (rollback disabled): {unclaimed}"
         )
+        if exempt:
+            note += f" | user WIP exempt from rollback: {sorted(exempt)}"
         if rollback_errors:
             note += " | " + "; ".join(rollback_errors)
     else:
