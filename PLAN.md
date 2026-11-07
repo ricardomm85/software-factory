@@ -1,6 +1,6 @@
 # Plan — Personal Software Factory
 
-**Date:** 2026-11-07 · **Status:** Phases 0–3 closed — Phase 4 (multi-lens review) next · **Workspace:** `~/Projects/software-factory`
+**Date:** 2026-11-07 · **Status:** Phases 0–4 closed — v1 core complete; next: polish (context_handoff/, parallel reviewers) or Phase 5 (observability UI) · **Workspace:** `~/Projects/software-factory`
 
 ## 1. Goal
 
@@ -234,6 +234,28 @@ the chain landed `6fcd1c6` (plan) + `13ac23c` (implementation) by itself. 60 uni
 passing.
 **Next: Phase 4 (multi-lens review)** — per the design note in §5: reviewer fan-out with
 typed findings envelopes, a scoring phase, and the ≥50 threshold as a deterministic gate.
+
+**Phase 4 — CLOSED (2026-11-07).** Shipped: `factory/chains.py::run_build_review` (multi-lens
+review of the working-tree changes: per-lens reviewer phases → merged findings → scorer phase
+→ deterministic gate that blocks on any finding scored ≥50 → bounded fix rounds with a fixer
+that re-claims its changes; the user's own WIP at chain start is exempt from the fixer's
+rollback), `FindingsOutput` / `ScoredOutput` envelopes (`Finding{file, line, description,
+reason}` + `score`), reviewer/scorer/fix prompts as data (`prompts/review_{lens}.md`,
+`score_findings.md`, `fix_findings.md` — the scorer's rubric is the validated 0–100 scale),
+roster lenses per the §5 effort decisions (`review-conventions` medium, `review-bugs` high,
+`scorer` medium; the builder doubles as fixer), and the CLI `factory build-review`
+(`--lenses/--scorer/--fixer/--max-rounds/--timeout` — reviews the working tree, so WIP is
+the natural input).
+Live verification (self-review dogfood): a deliberate Spanish-text violation planted as WIP
+was caught by the lens reviewers, scored ≥50 by the scorer, blocked by the gate, FIXED by
+the fixer in-session (file rewritten to compliant English), and the round-2 re-review came
+back clean — run `c7ec442f`, phases `review:*:r1 → score → gate → fix → review:*:r2 → score
+→ gate`. Also surfaced and fixed two transport bugs en vivo (per-invocation timeout is now
+configurable; the first attempt timed out at 300s). 66 unit tests passing.
+**v1 core is complete:** the factory now plans, builds, tests, reviews, and fixes itself.
+Natural next steps, in no fixed order: Phase 5 (observability UI over the SQLite trace),
+`context_handoff/` as first-class handoff storage, parallel reviewer execution (Phase 6's
+fleet), and the roster-vs-target-repo coupling decision noted in the Phase 2 review.
 
 ## References
 

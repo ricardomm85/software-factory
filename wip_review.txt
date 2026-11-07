@@ -1,1 +1,1 @@
-Esta linea es un texto de prueba en espanol para provocar una violacion del lenguaje.
+This line is now in English: deliberate compliance with the language policy.
