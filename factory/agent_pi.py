@@ -5,8 +5,10 @@ with the factory's secrets injected into its environment — the key never
 appears in config files or on the command line.
 """
 
+import json
 import os
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +69,8 @@ def run_pi(
     Secrets come from the repo-local ``.env`` (repo_dir); there is no global fallback.
     """
     cmd = build_pi_command(prompt, model=model, session_id=session_id, mode=mode, thinking=thinking)
+    if repo_dir is None:
+        repo_dir = Path.cwd()
     env = os.environ.copy()
     env.update(load_env(repo_dir))
     started = time.monotonic()
@@ -97,4 +101,103 @@ def run_pi(
         stderr=proc.stderr,
         duration_ms=elapsed,
         command=cmd,
+    )
+
+
+def _final_assistant_text(events: list[dict]) -> str:
+    """Pull the final assistant message text out of pi's JSONL event stream."""
+    for evt in reversed(events):
+        if evt.get("type") != "message_end":
+            continue
+        msg = evt.get("message") or {}
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+    return ""
+
+
+def run_pi_streaming(
+    prompt: str,
+    model: str,
+    session_id: str | None = None,
+    thinking: str | None = None,
+    timeout_s: int = 300,
+    repo_dir: Path | None = None,
+    on_event=None,
+) -> AgentResult:
+    """Run pi in JSONL mode, forwarding each event to ``on_event`` as it lands.
+
+    This is the live-trace feed: events reach the SQLite tracer while the agent
+    is still working, not batched at the end. The returned ``stdout`` is the
+    final assistant text extracted from the event stream.
+    """
+    cmd = ["pi", "--mode", "json", "-p"]
+    if session_id is not None:
+        cmd += ["--session-id", session_id]
+    if thinking:
+        cmd += ["--thinking", thinking]
+    cmd += ["--model", model, prompt]
+
+    if repo_dir is None:
+        repo_dir = Path.cwd()
+    env = os.environ.copy()
+    env.update(load_env(repo_dir))
+    started = time.monotonic()
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        cwd=str(repo_dir) if repo_dir else None,
+    )
+
+    events: list[dict] = []
+    bad_lines = 0
+
+    def _pump() -> None:
+        nonlocal bad_lines
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                bad_lines += 1
+                continue
+            events.append(evt)
+            if on_event is not None:
+                try:
+                    on_event(evt)
+                except Exception:
+                    pass  # tracing must never break the agent run
+
+    pump = threading.Thread(target=_pump, daemon=True)
+    pump.start()
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.kill()
+    pump.join(timeout=5)
+    stderr = proc.stderr.read() if proc.stderr is not None else ""
+    final = _final_assistant_text(events)
+    return AgentResult(
+        exit_code=-1 if timed_out else (proc.returncode or 0),
+        stdout=final,
+        stderr=stderr,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        command=cmd,
+        timed_out=timed_out,
     )

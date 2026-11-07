@@ -3,7 +3,7 @@ name = "factory"
 version = "0.1.0"
 description = "Personal software factory: a Python orchestrator that owns the agentic SDLC loop."
 requires-python = ">=3.12"
-dependencies = ["pyyaml>=6.0"]
+dependencies = ["pyyaml>=6.0", "pydantic>=2.7"]
 
 [project.scripts]
 factory = "factory.__main__:main"
