@@ -133,6 +133,7 @@ def call_agent(
     max_attempts: int = 3,
     agent_fn=run_pi_streaming,
     repo_dir: Path | None = None,
+    timeout_s: int = 300,
 ) -> BaseModel:
     """Run one agent phase: prompt in, typed envelope out, same-session retries.
 
@@ -162,6 +163,7 @@ def call_agent(
             thinking=agent_cfg.get("thinking"),
             on_event=lambda evt: phase.log("pi_event", evt),
             repo_dir=repo_dir,
+            timeout_s=timeout_s,
         )
         last_text = result.stdout
 

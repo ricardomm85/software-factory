@@ -51,6 +51,33 @@ class PlanOutput(EnvelopeBase):
     plan_path: str = ""
 
 
+class Finding(BaseModel):
+    """One reported issue: where it is, what it is, why it was flagged."""
+
+    file: str = ""
+    line: int = 0
+    description: str = ""
+    reason: str = ""
+
+
+class FindingsOutput(EnvelopeBase):
+    """Output type for reviewer phases: the issues found in the reviewed changes."""
+
+    findings: list[Finding] = Field(default_factory=list)
+
+
+class ScoredFinding(Finding):
+    """A finding after verification, with a 0-100 confidence score that it is real."""
+
+    score: int = 0
+
+
+class ScoredOutput(EnvelopeBase):
+    """Output type for the scorer phase: findings with scores attached."""
+
+    findings: list[ScoredFinding] = Field(default_factory=list)
+
+
 def extract_json(text: str) -> dict:
     """Pull a JSON object out of agent text, tolerating fences and stray prose."""
     cleaned = FENCE_RE.sub("", text)

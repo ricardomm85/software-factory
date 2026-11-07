@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .agent_pi import run_pi
-from .chains import run_build_test, run_plan_build_test
+from .chains import run_build_review, run_build_test, run_plan_build_test
 from .config import ConfigError, load_config, resolve_agent
 from .db import connect
 from .envelope import RunOutput
@@ -166,6 +166,35 @@ def _require_clean_tree(repo_dir: Path) -> int:
     return 0
 
 
+def cmd_build_review(args) -> int:
+    cfg = _load_config(args.config)
+    repo_dir = args.config.parent
+    lens_names = [name.strip() for name in args.lenses.split(",") if name.strip()]
+    reviewers = [_resolve_agent(cfg, name) for name in lens_names]
+    scorer = _resolve_agent(cfg, args.scorer)
+    fixer = _resolve_agent(cfg, args.fixer)
+    conn = connect(_db_path(cfg, args.config))
+    accepted = False
+    try:
+        accepted, reason = run_build_review(
+            conn,
+            repo_dir=repo_dir,
+            reviewer_cfgs=reviewers,
+            scorer_cfg=scorer,
+            fixer_cfg=fixer,
+            max_rounds=args.max_rounds,
+            timeout_s=args.timeout,
+        )
+    except (AgentPhaseError, OSError) as exc:
+        # OSError covers a lens whose prompt template file is missing, and
+        # untracked-file read errors from the diff collector.
+        print(f"build-review FAILED: {exc}", file=sys.stderr)
+        return 1
+    if reason:
+        print(f"build-review: {reason}")
+    return 0 if accepted else 1
+
+
 def cmd_sessions(args) -> int:
     cfg = _load_config(args.config)
     conn = connect(_db_path(cfg, args.config))
@@ -251,6 +280,22 @@ def main(argv: list[str] | None = None) -> int:
     p_pbt.add_argument("--max-rounds", type=int, default=3, help="Bounded fix rounds")
     p_pbt.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_pbt.set_defaults(func=cmd_plan_build_test)
+
+    p_br = sub.add_parser(
+        "build-review",
+        help="multi-lens review of the working-tree changes: reviewers → scorer → gate (>=50 blocks) → fix rounds",
+    )
+    p_br.add_argument(
+        "--lenses",
+        default="review-conventions,review-bugs",
+        help="Comma-separated reviewer agent names from the roster",
+    )
+    p_br.add_argument("--scorer", default="scorer", help="Scorer agent from the roster")
+    p_br.add_argument("--fixer", default="builder", help="Agent that applies fixes")
+    p_br.add_argument("--max-rounds", type=int, default=2, help="Bounded review→fix rounds")
+    p_br.add_argument("--timeout", type=int, default=600, help="Per-invocation agent timeout in seconds")
+    p_br.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
+    p_br.set_defaults(func=cmd_build_review)
 
     p_sessions = sub.add_parser("sessions", help="list traced runs")
     p_sessions.add_argument("--limit", type=int, default=20)
