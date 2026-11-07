@@ -56,11 +56,30 @@ Consolidated from the landscape (Warp, Factory.com, Huntley, MetaGPT, sssf):
 | 1 | **Spine** | `run` with id, `run.phase()` context manager, pydantic envelope with same-session retry, events → SQLite WAL, CLI commands `sessions`/`phases` | `factory run "<prompt>"` — 1 agent, parsed envelope, queryable trace |
 | 2 | **Gates** | `gates.py`, bounded correction loop (max N rounds), `writes` boundary with rollback | `factory build-test "<prompt>"` — builder + code(test) + fix loop. Already genuinely useful |
 | 3 | **Standard chain** | planner + inter-agent handoff, commit phase owned by code (builder proposes the message), YAML roster with multiple models | `factory plan-build-test` — real features end-to-end. **Milestone: first self-hosted commit** — the factory ships a non-core change to this very repo (see §7) |
-| 4 | **Review + measurement** | reviewer + revise loop, `quality.py` with real commands (no placeholders), `run.finish(accepted=)`, tokens/cost per run in the trace, home-grown eval (5–10 known tasks from your repos) | `factory simple-sdlc` + cost/success scorecard per run |
+| 4 | **Review + measurement** | multi-lens reviewer fan-out (see design note below), revise loop, `quality.py` with real commands (no placeholders), `run.finish(accepted=)`, tokens/cost per run in the trace, home-grown eval (5–10 known tasks from your repos) | `factory simple-sdlc` + cost/success scorecard per run |
 | 5 | **Observability product** | read-only UI over SQLite (per-phase waterfall), optional human checkpoints pre-commit | Watch a full run live without reading transcripts |
 | 6 | **Scale (v2)** | parallelism, branch-per-run + Docker sandbox, GitHub triggers, risk-based checkpoints, self-improvement, VPS if needed | Runs in parallel without direct supervision |
 
 Every phase ends in something **runnable**, not something designed.
+
+### Phase 4 design note — multi-lens code review (added 2026-11-07)
+
+The manual `/code-review` run that validated Phase 1 maps 1:1 onto the factory, so Phase 4's
+reviewer becomes a **fan-out of bounded review agents** instead of a single reviewer:
+
+- **Parallel reviewer phases**, each with a typed envelope:
+  `FindingsOutput { issues: [{file, line, description, reason}] }`.
+- **A scoring phase** (verifies each finding against the code with a 0–100 rubric).
+- **The ≥50 threshold is a gate** — deterministic code, not an agent: parse scores, filter,
+  fail the phase while any verified finding is unfixed. The fix loop for what crosses the
+  threshold is the Phase 2 bounded correction loop.
+- **Roster effort per lens** (decided by Ricardo): context lenses (eligibility, instruction
+  files, change summary) `low` · conventions reviewer `medium` · bug reviewers (shallow scan
+  + git history) `high` · scorers `medium` · fixer `medium`.
+- **Cost lesson from the manual run** (~3M subagent tokens at high effort with unbounded
+  prompts): the deep bug lenses are where reasoning pays — the two grave Phase 1 findings
+  (stderr deadlock, tracer threading) only surfaced there — while everything else runs
+  cheaper. Bounded prompts + per-role effort keep the factory version a fraction of the cost.
 
 ## 6. Agent backend and cost (Phase 0 decision)
 
