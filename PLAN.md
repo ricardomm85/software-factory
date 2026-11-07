@@ -1,6 +1,6 @@
 # Plan — Personal Software Factory
 
-**Date:** 2026-11-07 · **Status:** Phases 0–4 closed — v1 core complete; next: polish (context_handoff/, parallel reviewers) or Phase 5 (observability UI) · **Workspace:** `~/Projects/software-factory`
+**Date:** 2026-11-07 · **Status:** Phases 0–5 closed — v1 shipped and observable; remaining: Phase 6 (scale, v2) and the polish items in §9 · **Workspace:** `~/Projects/software-factory`
 
 ## 1. Goal
 
@@ -253,9 +253,31 @@ back clean — run `c7ec442f`, phases `review:*:r1 → score → gate → fix �
 → gate`. Also surfaced and fixed two transport bugs en vivo (per-invocation timeout is now
 configurable; the first attempt timed out at 300s). 66 unit tests passing.
 **v1 core is complete:** the factory now plans, builds, tests, reviews, and fixes itself.
-Natural next steps, in no fixed order: Phase 5 (observability UI over the SQLite trace),
-`context_handoff/` as first-class handoff storage, parallel reviewer execution (Phase 6's
-fleet), and the roster-vs-target-repo coupling decision noted in the Phase 2 review.
+Natural next steps, in no fixed order: human checkpoints pre-commit (the deferred half of
+Phase 5), `context_handoff/` as first-class handoff storage, parallel reviewer execution
+(Phase 6's fleet), and the roster-vs-target-repo coupling decision noted in the Phase 2
+review.
+
+### Phase 5 closure note — observability UI (added 2026-11-07)
+
+`factory/ui.py` + `factory ui --port`: a stdlib-only read-only web page over the trace —
+no new dependencies, no external assets, loopback binding only. Routes: `/` (recent runs
+with status, duration, phase/event counts) and `/run/{id}` (request summary, per-phase
+waterfall with proportional duration bars, orchestrator-event timeline, pi stream shown
+as collapsed counts). The run page auto-refreshes every 5s while the run is still
+`running`: watching a run live requires no transcripts.
+
+Two properties are enforced by SQLite, not by convention: every request opens the db on a
+`query_only` connection (any accidental write raises), and WAL means the page renders
+while the factory is mid-write (covered by a test that holds an uncommitted writer
+transaction and fetches the index). All agent-produced text is HTML-escaped; long
+payloads collapse behind `<details>`. 12 new tests (78 total). Live verification against
+the real trace: index and run pages render Phases 1–4 history correctly
+(run `c7ec442f`: waterfall, accepted badge, pi counts).
+
+Dogfood: the factory reviewed its own UI diff with `factory build-review` —
+"no findings scored >=50". The deferred half of Phase 5 (human checkpoints pre-commit)
+stays on the §9 list.
 
 ## References
 
