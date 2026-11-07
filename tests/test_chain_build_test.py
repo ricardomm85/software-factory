@@ -1,6 +1,5 @@
 """Tests for the build-test chain: bounded rounds, gates, rollback, same-session fixes."""
 
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -49,20 +48,6 @@ class StubTests:
         from factory.chains import TestResult
 
         return TestResult(exit_code=self.exit_codes.pop(0), output_tail="", duration_ms=5, command=command)
-
-
-@pytest.fixture()
-def repo(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-b", "main"], cwd=str(repo), capture_output=True, check=True)
-    (repo / "README.md").write_text("base\n")
-    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "."], cwd=str(repo), capture_output=True, check=True)
-    subprocess.run(
-        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init"],
-        cwd=str(repo), capture_output=True, check=True,
-    )
-    return repo
 
 
 def write_claimed_feature(repo_dir: Path):

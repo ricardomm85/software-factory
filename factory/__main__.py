@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .agent_pi import run_pi
-from .chains import run_build_test
+from .chains import run_build_test, run_plan_build_test
 from .config import ConfigError, load_config, resolve_agent
 from .db import connect
 from .envelope import RunOutput
@@ -94,16 +94,9 @@ def cmd_build_test(args) -> int:
             file=sys.stderr,
         )
         return 2
-    dirty = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=str(repo_dir), capture_output=True, text=True
-    )
-    if dirty.returncode != 0 or dirty.stdout.strip():
-        print(
-            "working tree not clean — commit or stash first: the writes boundary "
-            "rolls back unclaimed changes against a clean baseline",
-            file=sys.stderr,
-        )
-        return 2
+    rc = _require_clean_tree(repo_dir)
+    if rc:
+        return rc
 
     conn = connect(_db_path(cfg, args.config))
     accepted = False
@@ -120,6 +113,57 @@ def cmd_build_test(args) -> int:
         print(f"build-test FAILED: {exc}", file=sys.stderr)
         return 1
     return 0 if accepted else 1
+
+
+def cmd_plan_build_test(args) -> int:
+    cfg = _load_config(args.config)
+    planner = _resolve_agent(cfg, args.planner)
+    builder = _resolve_agent(cfg, args.builder)
+    repo_dir = args.config.parent
+    test_command = args.test_command or cfg["defaults"].get("test_command") or ""
+    if not test_command.strip():
+        print(
+            "no test command: pass --test-command or set defaults.test_command in the roster "
+            "(a placeholder suite is theater)",
+            file=sys.stderr,
+        )
+        return 2
+    rc = _require_clean_tree(repo_dir)
+    if rc:
+        return rc
+
+    conn = connect(_db_path(cfg, args.config))
+    try:
+        accepted, reason = run_plan_build_test(
+            conn,
+            args.prompt,
+            planner,
+            builder,
+            test_command=test_command,
+            repo_dir=repo_dir,
+            max_rounds=args.max_rounds,
+        )
+    except AgentPhaseError as exc:
+        print(f"plan-build-test FAILED: {exc}", file=sys.stderr)
+        return 1
+    if not accepted and reason:
+        print(f"plan-build-test rejected: {reason}", file=sys.stderr)
+    return 0 if accepted else 1
+
+
+def _require_clean_tree(repo_dir: Path) -> int:
+    """The writes boundary rolls back against a clean baseline — refuse otherwise."""
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=str(repo_dir), capture_output=True, text=True
+    )
+    if dirty.returncode != 0 or dirty.stdout.strip():
+        print(
+            "working tree not clean — commit or stash first: the writes boundary "
+            "rolls back unclaimed changes against a clean baseline",
+            file=sys.stderr,
+        )
+        return 2
+    return 0
 
 
 def cmd_sessions(args) -> int:
@@ -195,6 +239,18 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--max-rounds", type=int, default=3, help="Bounded fix rounds")
     p_bt.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_bt.set_defaults(func=cmd_build_test)
+
+    p_pbt = sub.add_parser(
+        "plan-build-test",
+        help="planner → builder + code(test) → code commit (the standard chain)",
+    )
+    p_pbt.add_argument("prompt", help="What to plan and implement")
+    p_pbt.add_argument("--planner", default="planner", help="Planner agent from the roster")
+    p_pbt.add_argument("--builder", default="builder", help="Builder agent from the roster")
+    p_pbt.add_argument("--test-command", default=None, help="Override the roster's test_command")
+    p_pbt.add_argument("--max-rounds", type=int, default=3, help="Bounded fix rounds")
+    p_pbt.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
+    p_pbt.set_defaults(func=cmd_plan_build_test)
 
     p_sessions = sub.add_parser("sessions", help="list traced runs")
     p_sessions.add_argument("--limit", type=int, default=20)
