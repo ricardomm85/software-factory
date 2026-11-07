@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         model=agent["model"],
         thinking=agent.get("thinking"),
         mode=args.mode,
+        repo_dir=args.config.parent,
     )
 
     if args.mode == "json":

@@ -90,8 +90,10 @@ The winner is declared in `config.yaml` as `coding_agent:` — never hardcoded.
 ③ `--mode json` streams typed JSONL events (`session`, `agent_start`, `message_*`,
 `tool_execution_*`, `turn_*`, `agent_end`) — the exact feed the SQLite tracer will consume.
 Working setup: provider `zai` in `~/.pi/agent/models.json` → `https://api.z.ai/api/paas/v4`
-(openai-completions), key interpolated from `~/.config/factory/.env` (`ZAI_API_KEY`, 600 perms,
-outside any repo; pi never sees the key in config). The plan serves the GLM-5.x family
+(openai-completions). Keys resolve two-layer, like git config: the repo-local `.env`
+(gitignored, chmod 600, documented by the committed `.env.sample` — the sssf convention)
+wins, and `~/.config/factory/.env` is the cross-repo fallback; pi never sees the key in
+config files or argv. The plan serves the GLM-5.x family
 (`glm-5.2` offers 1M context if a stronger planner is needed later).
 **Roster decision (2026-11-07): run every agent on `zai/glm-5.3-flash` for now** — phase
 differentiation comes from `thinking` levels, not model ids. Revisit per-role models once

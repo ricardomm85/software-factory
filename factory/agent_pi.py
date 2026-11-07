@@ -9,6 +9,7 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from .env import load_env
 
@@ -59,11 +60,15 @@ def run_pi(
     mode: str = "print",
     thinking: str | None = None,
     timeout_s: int = 300,
+    repo_dir: Path | None = None,
 ) -> AgentResult:
-    """Run one pi invocation with factory secrets injected. Never raises on agent failure."""
+    """Run one pi invocation with factory secrets injected. Never raises on agent failure.
+
+    Secrets resolve repo-local ``.env`` first (repo_dir), global fallback second.
+    """
     cmd = build_pi_command(prompt, model=model, session_id=session_id, mode=mode, thinking=thinking)
     env = os.environ.copy()
-    env.update(load_env())
+    env.update(load_env(repo_dir))
     started = time.monotonic()
     try:
         proc = subprocess.run(
