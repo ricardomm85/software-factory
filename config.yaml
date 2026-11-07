@@ -5,6 +5,7 @@ defaults:
   model: zai/glm-5.3-flash         # provider/model-id, always
   thinking: medium                 # off|minimal|low|medium|high|xhigh|max — quote 'off' (YAML parses bare off/on as booleans)
   data_dir: data                   # runtime trace + sessions (gitignored)
+  test_command: uv run pytest -q   # the real suite for code(test) phases — never a placeholder
 
 agents:
   - name: scout

@@ -31,6 +31,17 @@ class RunOutput(EnvelopeBase):
     """Output type for a Phase 1 one-shot agent run."""
 
 
+class BuildOutput(EnvelopeBase):
+    """Output type for builder phases: the agent claims every file it changed.
+
+    ``changed_files`` is what the diff gate verifies against; ``commit_message``
+    is a proposal the code side may use — the agent never runs git itself.
+    """
+
+    changed_files: list[str] = Field(default_factory=list)
+    commit_message: str = ""
+
+
 def extract_json(text: str) -> dict:
     """Pull a JSON object out of agent text, tolerating fences and stray prose."""
     cleaned = FENCE_RE.sub("", text)

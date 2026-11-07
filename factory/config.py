@@ -50,6 +50,10 @@ def validate_config(cfg: dict) -> None:
     if not isinstance(data_dir, str) or not data_dir.strip():
         raise ConfigError(f"defaults.data_dir must be a non-empty string (got {data_dir!r})")
 
+    test_command = defaults.get("test_command")
+    if test_command is not None and (not isinstance(test_command, str) or not test_command.strip()):
+        raise ConfigError("defaults.test_command must be a non-empty string (the real one, not a placeholder)")
+
     agents = cfg.get("agents")
     if not isinstance(agents, list) or not agents:
         raise ConfigError("missing required section: agents (non-empty list)")

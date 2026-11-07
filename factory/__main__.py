@@ -1,18 +1,21 @@
 """CLI entry point for the factory.
 
 Commands:
-  factory run "<prompt>"      one agent phase inside a traced run (the spine)
-  factory sessions            list traced runs
-  factory phases <run_id>     list phases of one run
-  factory prompt "<prompt>"   raw one-shot agent call, no trace (debug helper)
+  factory run "<prompt>"        one agent phase inside a traced run (the spine)
+  factory build-test "<prompt>" builder + code(test) with a bounded fix loop (gates + rollback)
+  factory sessions              list traced runs
+  factory phases <run_id>       list phases of one run
+  factory prompt "<prompt>"     raw one-shot agent call, no trace (debug helper)
 """
 
 import argparse
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from .agent_pi import run_pi
+from .chains import run_build_test
 from .config import ConfigError, load_config, resolve_agent
 from .db import connect
 from .envelope import RunOutput
@@ -76,6 +79,46 @@ def cmd_run(args) -> int:
     run.finish(accepted=accepted, reason=reason)
     verdict = "accepted" if accepted else "REJECTED"
     print(f"run {run.id} {verdict} ({agent['name']}: {envelope.summary})")
+    return 0 if accepted else 1
+
+
+def cmd_build_test(args) -> int:
+    cfg = _load_config(args.config)
+    agent = _resolve_agent(cfg, args.agent)
+    repo_dir = args.config.parent
+    test_command = args.test_command or cfg["defaults"].get("test_command") or ""
+    if not test_command.strip():
+        print(
+            "no test command: pass --test-command or set defaults.test_command in the roster "
+            "(a placeholder suite is theater)",
+            file=sys.stderr,
+        )
+        return 2
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=str(repo_dir), capture_output=True, text=True
+    )
+    if dirty.returncode != 0 or dirty.stdout.strip():
+        print(
+            "working tree not clean — commit or stash first: the writes boundary "
+            "rolls back unclaimed changes against a clean baseline",
+            file=sys.stderr,
+        )
+        return 2
+
+    conn = connect(_db_path(cfg, args.config))
+    accepted = False
+    try:
+        accepted = run_build_test(
+            conn,
+            args.prompt,
+            agent,
+            test_command=test_command,
+            repo_dir=repo_dir,
+            max_rounds=args.max_rounds,
+        )
+    except AgentPhaseError as exc:
+        print(f"build-test FAILED: {exc}", file=sys.stderr)
+        return 1
     return 0 if accepted else 1
 
 
@@ -144,6 +187,14 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--max-attempts", type=int, default=3, help="Envelope retries in the same session")
     p_run.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_run.set_defaults(func=cmd_run)
+
+    p_bt = sub.add_parser("build-test", help="builder + code(test) with a bounded fix loop")
+    p_bt.add_argument("prompt", help="What the builder should implement")
+    p_bt.add_argument("--agent", default="builder", help="Builder agent from the roster")
+    p_bt.add_argument("--test-command", default=None, help="Override the roster's test_command")
+    p_bt.add_argument("--max-rounds", type=int, default=3, help="Bounded fix rounds")
+    p_bt.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
+    p_bt.set_defaults(func=cmd_build_test)
 
     p_sessions = sub.add_parser("sessions", help="list traced runs")
     p_sessions.add_argument("--limit", type=int, default=20)
