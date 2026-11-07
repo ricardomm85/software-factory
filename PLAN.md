@@ -32,6 +32,10 @@ bounded nodes inside it. Governing principle: *"Agent proposes, code disposes."*
 - **Trace in SQLite (WAL)**: one cursor query is the whole transport. No WebSockets, no ingest.
 - **YAML roster** (who each agent is: model, thinking level, prompts, tools, `writes`) kept
   separate from call sites (how it's used). ADWs never name a model, they name an agent.
+  Model and effort are chosen **per agent (role/phase)** in the roster; per-task choice is done
+  by picking a different agent variant (e.g. `builder-fast` vs `builder-strong`) at the call
+  site — never by passing a loose model. Ad-hoc model overrides are allowed but must be
+  recorded in the run's trace: a run that cannot be reproduced from its trace is broken.
 - **`writes` is the boundary**, not `tools`: working-tree comparison before/after every call;
   unauthorized change → rollback + phase fails.
 
@@ -79,6 +83,18 @@ discarded for v1 (fragile, no structured output).
 (`claude -p --output-format json|stream-json` / `opencode run`), ② session resume by id
 (corrections without cold restart), ③ line-by-line events (JSONL) for the live trace.
 The winner is declared in `config.yaml` as `coding_agent:` — never hardcoded.
+
+**Spike result (2026-11-07): pi CONFIRMED** — all three criteria pass with `zai/glm-5.3-flash`:
+① `pi -p` one-shot returns clean parseable JSON on stdout (exit 0);
+② `--session-id <id>` is create-or-continue — context recalled across two separate invocations;
+③ `--mode json` streams typed JSONL events (`session`, `agent_start`, `message_*`,
+`tool_execution_*`, `turn_*`, `agent_end`) — the exact feed the SQLite tracer will consume.
+Working setup: provider `zai` in `~/.pi/agent/models.json` → `https://api.z.ai/api/paas/v4`
+(openai-completions), key interpolated from `~/.config/factory/.env` (`ZAI_API_KEY`, 600 perms,
+outside any repo; pi never sees the key in config). The plan serves the GLM-5.x family:
+`glm-5.2` (1M context) → planner/reviewer candidate; `glm-5.3-flash` (fast) → builder
+candidate; also `glm-5.3`, `glm-5.3-flashx`, `glm-4.7`, `glm-5-turbo`. `~/.pi/` is machine
+config, never committed; the factory repo will stamp its own copy for other machines.
 
 **Candidates evaluated (2026-11-07):** current recommendation = **pi** (native orchestration,
 minimal, frictionless Z.AI; [models.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md)).
@@ -131,9 +147,9 @@ Rules specific to self-hosting:
 
 ## 9. Next step
 
-**Phase 0 — spike**: install pi, write `~/.pi/agent/models.json` pointing at Z.AI
-(GLM plan API key), and validate the 3 criteria with a smoke prompt: ① headless structured
-output, ② resume by session-id, ③ line-by-line events (JSONL). Then Phase 1.
+**Phase 0 wrap-up**: harness confirmed (see §6 spike result). Remaining to close Phase 0:
+repo skeleton (`factory/` package, `config.yaml`, SQLite schema) + a minimal Python script
+that spawns `pi` headless and captures its output. Then Phase 1 (spine).
 
 ## References
 
