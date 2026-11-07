@@ -1,6 +1,6 @@
 # Plan — Personal Software Factory
 
-**Date:** 2026-11-07 · **Status:** Phases 0–1 closed — Phase 2 (gates) next · **Workspace:** `~/Projects/software-factory`
+**Date:** 2026-11-07 · **Status:** Phases 0–2 closed — Phase 3 (standard chain) next · **Workspace:** `~/Projects/software-factory`
 
 ## 1. Goal
 
@@ -198,6 +198,25 @@ the second run). 36 unit tests passing.
 **Next: Phase 2 (gates)** — `gates.py` (`artifacts_exist`, `diff_matches_claims`,
 `tests_pass`), the bounded correction loop wired to gate violations, and the `writes`
 boundary with rollback. Deliverable: `factory build-test "<prompt>"`.
+
+**Phase 2 — CLOSED (2026-11-07).** Shipped: `factory/gates.py` (post-hoc gates with one
+`Check` per thing examined — `run_output_gate`, `artifacts_exist`, `diff_matches_claims`
+with rollback of unclaimed changes: tracked files restored, untracked files removed —
+declared-but-unchanged stays a note, not a failure), `factory/chains.py::run_build_test`
+(bounded build→test rounds; gate violations and red suites corrected in the SAME builder
+session via `prompts/gate_correction.md` / `prompts/test_correction.md`; the run settles
+its own trace on any crash), `BuildOutput` envelope (`changed_files` is what the diff gate
+verifies; `commit_message` proposed, never executed by the agent), `defaults.test_command`
+in the roster (the real suite — placeholders are theater), and the CLI:
+`factory build-test "<prompt>"` requiring a clean working tree as the writes-boundary
+baseline.
+Live verification (dogfood): run `a97f272b` accepted — builder wrote `PHASE2.md` claiming
+it in `changed_files`, gates verified it against the real `git status`, pytest ran green
+(1s), trace shows both lanes (`build:r1` agent 19s / `test:r1` code 1s) with
+`gate_results` + `test_run` events. 52 unit tests passing.
+**Next: Phase 3 (standard chain)** — planner + inter-agent handoff (`context_handoff/`,
+envelope injected into the next prompt), commit phase owned by code, multi-model roster
+options. Deliverable: `factory plan-build-test "<prompt>"`.
 
 ## References
 
