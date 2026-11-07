@@ -9,6 +9,7 @@ Commands:
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .agent_pi import run_pi
@@ -19,19 +20,21 @@ from .run import AgentPhaseError, Run, call_agent
 
 
 def _load_config(path: Path) -> dict:
-    try:
-        return load_config(path)
-    except ConfigError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
-        sys.exit(2)
+    # ConfigError propagates; main() maps it to a clean exit code.
+    return load_config(path)
 
 
 def _resolve_agent(cfg: dict, name: str | None) -> dict:
+    return resolve_agent(cfg, name)
+
+
+def _fmt_duration(started_at, ended_at) -> str:
+    """Human duration between two ISO timestamps; '' when either is missing."""
     try:
-        return resolve_agent(cfg, name)
-    except ConfigError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
-        sys.exit(2)
+        t0, t1 = datetime.fromisoformat(started_at), datetime.fromisoformat(ended_at)
+        return f"{(t1 - t0).total_seconds():.0f}s"
+    except (TypeError, ValueError):
+        return ""
 
 
 def _db_path(cfg: dict, config_path: Path) -> Path:
@@ -98,9 +101,7 @@ def cmd_phases(args) -> int:
     run = Run.get(conn, args.run_id)
     print(f"run {run.id}")
     for p in run.phases():
-        duration = ""
-        if p["started_at"] and p["ended_at"]:
-            duration = p["ended_at"][-8:]
+        duration = _fmt_duration(p["started_at"], p["ended_at"])
         line = f"  #{p['seq']} {p['name']:10s} kind={p['kind']:5s} owner={p['owner']:8s} {p['status']}"
         if p["error"]:
             line += f"  error={p['error']}"
@@ -141,24 +142,35 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("prompt", help="Task prompt for the agent")
     p_run.add_argument("--agent", default=None, help="Agent name from the roster")
     p_run.add_argument("--max-attempts", type=int, default=3, help="Envelope retries in the same session")
+    p_run.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_run.set_defaults(func=cmd_run)
 
     p_sessions = sub.add_parser("sessions", help="list traced runs")
     p_sessions.add_argument("--limit", type=int, default=20)
+    p_sessions.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_sessions.set_defaults(func=cmd_sessions)
 
     p_phases = sub.add_parser("phases", help="list phases of one run")
     p_phases.add_argument("run_id")
+    p_phases.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_phases.set_defaults(func=cmd_phases)
 
     p_prompt = sub.add_parser("prompt", help="raw one-shot agent call, no trace")
     p_prompt.add_argument("prompt")
     p_prompt.add_argument("--agent", default=None)
     p_prompt.add_argument("--mode", choices=["print", "json"], default="print")
+    p_prompt.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_prompt.set_defaults(func=cmd_prompt)
 
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:  # unknown run id and other bad lookups
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

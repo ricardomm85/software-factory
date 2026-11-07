@@ -18,7 +18,7 @@ def test_json_mode_with_session_and_thinking():
         mode="json",
         thinking="high",
     )
-    assert cmd[:3] == ["pi", "--mode", "json"]
+    assert cmd[:4] == ["pi", "--mode", "json", "-p"]  # -p keeps json mode non-interactive
     assert "--session-id" in cmd and cmd[cmd.index("--session-id") + 1] == "run-abc123"
     assert "--thinking" in cmd and cmd[cmd.index("--thinking") + 1] == "high"
     assert cmd[cmd.index("--model") + 1] == "zai/glm-5.2"

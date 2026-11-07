@@ -16,7 +16,7 @@ from pydantic import BaseModel, ValidationError
 
 from .agent_pi import AgentResult, run_pi_streaming
 from .db import connect
-from .envelope import RunOutput, parse_envelope, report_contract
+from .envelope import PROMPTS_DIR, RunOutput, parse_envelope, report_contract
 
 
 class AgentPhaseError(Exception):
@@ -137,21 +137,22 @@ def call_agent(
     """Run one agent phase: prompt in, typed envelope out, same-session retries.
 
     The pi session id is ``{run_id}-{agent}`` so later calls to the same agent in
-    the same run resume its context window instead of starting cold.
+    the same run resume its context window instead of starting cold. Invalid
+    envelopes are corrected in-session; a timed-out or crashed agent fails the
+    phase immediately with its stderr surfaced — retrying a deterministic
+    failure only burns the timeout again.
     """
     session_id = f"{run.id}-{agent_cfg['name']}"
     full_prompt = f"{prompt}\n\n{report_contract(output_type)}"
+    correction_template = (PROMPTS_DIR / "correction.md").read_text(encoding="utf-8")
     last_text = ""
+    last_error = ""
 
-    for attempt in range(1, max_attempts + 1):
+    for attempt in range(1, max(1, max_attempts) + 1):
         phase.log("attempt", {"attempt": attempt, "session_id": session_id})
         prompt_for_attempt = full_prompt
         if attempt > 1:
-            prompt_for_attempt = (
-                f"Your previous reply was not a valid envelope: {last_error}. "
-                f"Reply again with ONLY the JSON object matching the ## Report contract. "
-                f"Nothing else."
-            )
+            prompt_for_attempt = correction_template.replace("{{error}}", last_error)
             phase.log("correction", {"attempt": attempt, "error": last_error})
 
         result: AgentResult = agent_fn(
@@ -163,6 +164,20 @@ def call_agent(
             repo_dir=repo_dir,
         )
         last_text = result.stdout
+
+        if result.timed_out:
+            # Deterministic failure: retrying only burns the timeout again.
+            phase.log("agent_timeout", {"duration_ms": result.duration_ms})
+            raise AgentPhaseError(
+                f"agent {agent_cfg['name']!r} timed out after {result.duration_ms} ms"
+            )
+        if result.exit_code != 0:
+            tail = (result.stderr or "").strip()[-2000:]
+            phase.log("agent_error", {"exit_code": result.exit_code, "stderr_tail": tail})
+            raise AgentPhaseError(
+                f"agent {agent_cfg['name']!r} exited with code {result.exit_code}"
+                + (f"; stderr tail: {tail}" if tail else "")
+            )
 
         try:
             envelope = parse_envelope(last_text, output_type)

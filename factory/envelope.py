@@ -7,11 +7,15 @@ Context transfers in code, not in conversation.
 
 import json
 import re
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
 FENCE_RE = re.compile(r"```(?:json)?")
+
+# Prompt templates are data (Markdown), per AGENTS.md — Python only fills placeholders.
+PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 class EnvelopeBase(BaseModel):
@@ -47,17 +51,13 @@ def report_contract(output_type: type[BaseModel]) -> str:
     """Render the JSON contract appended to every agent prompt (the '## Report' block).
 
     The output contract lives in three places and they are one thing: the type here,
-    this rendered contract in the prompt, and the output_type at the call site.
-    Change one, change all three in the same edit.
+    the Markdown template in ``factory/prompts/``, and the output_type at the call
+    site. Change one, change all three in the same edit.
     """
-    lines = [
-        "## Report",
-        "Your FINAL message must be ONLY one valid JSON object — no markdown fences,",
-        "no prose before or after — with exactly these fields:",
-    ]
+    template = (PROMPTS_DIR / "report_contract.md").read_text(encoding="utf-8")
+    lines = []
     for name, field in output_type.model_fields.items():
         required = "required" if field.is_required() else "optional"
         annotation = str(field.annotation).replace("typing.", "")
         lines.append(f'- "{name}": {annotation} ({required})')
-    lines.append('Example shape: {"status": "success", "summary": "...", ...}')
-    return "\n".join(lines)
+    return template.replace("{{fields}}", "\n".join(lines))

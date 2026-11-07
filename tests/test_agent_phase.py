@@ -76,3 +76,29 @@ def test_events_trace_attempts_and_corrections(run):
         call_agent(run, phase, "do it", AGENT_CFG, agent_fn=stub)
     types = {r["type"] for r in run.conn.execute("SELECT type FROM events").fetchall()}
     assert {"attempt", "correction", "pi_event", "envelope_invalid", "envelope_ok"} <= types
+
+
+def test_agent_timeout_raises_immediately_without_retry(run):
+    def timeout_agent(**kwargs):
+        return AgentResult(exit_code=-1, stdout="", stderr="", duration_ms=301000, command=[], timed_out=True)
+
+    with pytest.raises(AgentPhaseError, match="timed out"):
+        with run.phase(name="run", owner="builder") as phase:
+            call_agent(run, phase, "do it", AGENT_CFG, agent_fn=timeout_agent)
+
+
+def test_agent_crash_surfaces_stderr(run):
+    def crash_agent(**kwargs):
+        return AgentResult(exit_code=1, stdout="", stderr="invalid api key", duration_ms=10, command=[])
+
+    with pytest.raises(AgentPhaseError, match="invalid api key"):
+        with run.phase(name="run", owner="builder") as phase:
+            call_agent(run, phase, "do it", AGENT_CFG, agent_fn=crash_agent)
+
+
+def test_zero_max_attempts_still_attempts_once(run):
+    stub = StubAgent(["garbage"])
+    with pytest.raises(AgentPhaseError):
+        with run.phase(name="run", owner="builder") as phase:
+            call_agent(run, phase, "do it", AGENT_CFG, max_attempts=0, agent_fn=stub)
+    assert len(stub.calls) == 1  # clamped to at least one attempt, no UnboundLocalError

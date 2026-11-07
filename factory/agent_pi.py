@@ -7,6 +7,7 @@ appears in config files or on the command line.
 
 import json
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -43,7 +44,8 @@ def build_pi_command(
     if mode == "print":
         cmd = ["pi", "-p"]
     elif mode == "json":
-        cmd = ["pi", "--mode", "json"]
+        # -p keeps the run non-interactive; stdout carries the JSONL event stream.
+        cmd = ["pi", "--mode", "json", "-p"]
     else:
         raise ValueError(f"mode must be 'print' or 'json', got {mode!r}")
     if session_id is not None:
@@ -76,7 +78,13 @@ def run_pi(
     started = time.monotonic()
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout_s, env=env, check=False
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            env=env,
+            check=False,
+            cwd=str(repo_dir),
         )
     except subprocess.TimeoutExpired as exc:
         elapsed = int((time.monotonic() - started) * 1000)
@@ -124,6 +132,14 @@ def _final_assistant_text(events: list[dict]) -> str:
     return ""
 
 
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Kill pi and any children holding its pipes — a bare kill() leaks grandchildren."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()
+
+
 def run_pi_streaming(
     prompt: str,
     model: str,
@@ -139,12 +155,7 @@ def run_pi_streaming(
     is still working, not batched at the end. The returned ``stdout`` is the
     final assistant text extracted from the event stream.
     """
-    cmd = ["pi", "--mode", "json", "-p"]
-    if session_id is not None:
-        cmd += ["--session-id", session_id]
-    if thinking:
-        cmd += ["--thinking", thinking]
-    cmd += ["--model", model, prompt]
+    cmd = build_pi_command(prompt, model=model, session_id=session_id, mode="json", thinking=thinking)
 
     if repo_dir is None:
         repo_dir = Path.cwd()
@@ -157,10 +168,12 @@ def run_pi_streaming(
         stderr=subprocess.PIPE,
         text=True,
         env=env,
-        cwd=str(repo_dir) if repo_dir else None,
+        cwd=str(repo_dir),
+        start_new_session=True,  # lets the timeout kill the whole tree, not just pi
     )
 
     events: list[dict] = []
+    stderr_lines: list[str] = []
     bad_lines = 0
 
     def _pump() -> None:
@@ -182,16 +195,24 @@ def run_pi_streaming(
                 except Exception:
                     pass  # tracing must never break the agent run
 
+    def _pump_stderr() -> None:
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            stderr_lines.append(line)
+
     pump = threading.Thread(target=_pump, daemon=True)
+    err_pump = threading.Thread(target=_pump_stderr, daemon=True)
     pump.start()
+    err_pump.start()
     timed_out = False
     try:
         proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
         timed_out = True
-        proc.kill()
+        _kill_process_tree(proc)
     pump.join(timeout=5)
-    stderr = proc.stderr.read() if proc.stderr is not None else ""
+    err_pump.join(timeout=5)
+    stderr = "".join(stderr_lines)
     final = _final_assistant_text(events)
     return AgentResult(
         exit_code=-1 if timed_out else (proc.returncode or 0),

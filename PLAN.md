@@ -1,6 +1,6 @@
 # Plan — Personal Software Factory
 
-**Date:** 2026-11-07 · **Status:** Phase 0 closed — Phase 1 (spine) next · **Workspace:** `~/Projects/software-factory`
+**Date:** 2026-11-07 · **Status:** Phases 0–1 closed — Phase 2 (gates) next · **Workspace:** `~/Projects/software-factory`
 
 ## 1. Goal
 
@@ -179,7 +179,6 @@ the second run). 36 unit tests passing.
 **Next: Phase 2 (gates)** — `gates.py` (`artifacts_exist`, `diff_matches_claims`,
 `tests_pass`), the bounded correction loop wired to gate violations, and the `writes`
 boundary with rollback. Deliverable: `factory build-test "<prompt>"`.
-Deliverable: `factory run "<prompt>"` with a queryable trace.
 
 ## References
 

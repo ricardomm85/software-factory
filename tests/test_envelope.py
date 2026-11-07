@@ -38,6 +38,12 @@ def test_report_contract_lists_fields():
     assert "FINAL message" in contract
 
 
+def test_report_contract_renders_template_without_placeholders():
+    contract = report_contract(RunOutput)
+    assert contract.startswith("## Report")
+    assert "{{" not in contract  # every placeholder was filled from the type
+
+
 def test_envelope_base_defaults():
     env = EnvelopeBase(status="fail")
     assert env.artifacts == [] and env.summary == ""

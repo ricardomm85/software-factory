@@ -46,6 +46,10 @@ def validate_config(cfg: dict) -> None:
     _validate_model(defaults.get("model"), "defaults.model")
     _validate_thinking(defaults.get("thinking"), "defaults.thinking")
 
+    data_dir = defaults.get("data_dir", "data")
+    if not isinstance(data_dir, str) or not data_dir.strip():
+        raise ConfigError(f"defaults.data_dir must be a non-empty string (got {data_dir!r})")
+
     agents = cfg.get("agents")
     if not isinstance(agents, list) or not agents:
         raise ConfigError("missing required section: agents (non-empty list)")
