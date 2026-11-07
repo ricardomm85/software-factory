@@ -27,6 +27,8 @@ surface, not the owner's desk.
 | Board shape | Columns **Backlog / Working / In PR** plus a separate **Archived** section; pauses show as a waiting badge on the Working card | The board stays calm; "someone has to answer this" is a badge, not a fifth column |
 | Concurrency | One active run per repo; per-repo FIFO queue; repos in parallel | Runs on the same repo would step on each other's git state |
 | Delivery | PR on GitHub (branch per task → push → `gh pr create`); card lands in In PR, moves to Archived on merge | Reviewable, revertible, and matches how the owner ships |
+| Deployment | Always-on home PC, one user, many repos; access from other devices via SSH tunnel or Tailscale, loopback binding stays | Standard ops (systemd user service); no auth to build while the port never leaves loopback |
+| Run cap | Global cap on simultaneous runs (config), sized to RAM | One-per-repo prevents git collisions, not RAM collisions — the target repos' Chrome E2E suites are the heavy part |
 
 ## 3. The shape (what we copy from sssf)
 
@@ -71,7 +73,7 @@ Consolidated from the landscape (Warp, Factory.com, Huntley, MetaGPT, sssf):
 | 3 | **Standard chain** | planner + inter-agent handoff, commit phase owned by code (builder proposes the message), YAML roster with multiple models | `factory plan-build-test` — real features end-to-end. **Milestone: first self-hosted commit** — the factory ships a non-core change to this very repo (see §7) |
 | 4 | **Review + measurement** | multi-lens reviewer fan-out (see design note below), revise loop, `quality.py` with real commands (no placeholders), `run.finish(accepted=)`, tokens/cost per run in the trace, home-grown eval (5–10 known tasks from your repos) | `factory simple-sdlc` + cost/success scorecard per run |
 | 5 | **Observability product** | read-only UI over SQLite (per-phase waterfall), optional human checkpoints pre-commit | Watch a full run live without reading transcripts |
-| 6 | **Task board** | `tasks` table (cards: title, prompt, repo, origin owner\|system, status, latest run), `factory serve` daemon owning execution (stdlib threads; one active run per repo, FIFO per repo), create-task form, kanban view — columns **Backlog / Working / In PR** + separate **Archived** section, card detail = the existing run page | Create a task in the browser and watch it execute without a terminal |
+| 6 | **Task board** | `tasks` table (cards: title, prompt, repo, origin owner\|system, status, latest run), roster gains a `repos:` list (path + per-repo test command — the create form offers repos by name, not raw paths), `factory serve` daemon owning execution (stdlib threads; one active run per repo, FIFO per repo, global cap on simultaneous runs), create-task form, kanban view — columns **Backlog / Working / In PR** + separate **Archived** section, card detail = the existing run page | Create a task in the browser and watch it execute without a terminal |
 | 7 | **Web human gates** | `pauses` table (type `questions` \| `plan_approval` \| `pr_approval`; request, answer, status); plan envelope gains `questions` — the card parks with a waiting badge, you answer from the board, the same session resumes; plan approval before build; PR approval before push; CLI keeps the stdin checkpoint | A task cannot pass plan, build-start, or push without a board decision |
 | 8 | **PR delivery + discovered work** | branch per task off the default branch, commit, push, `gh pr create`, PR URL on the card (column In PR; Archived on merge); envelopes gain `discovered` findings that must NOT enter this PR — deterministic code turns them into Backlog cards with `origin_run` provenance | Card lands in In PR with its URL; out-of-scope findings become new cards, never silent scope creep |
 | 9 | **Scale, when it hurts** | Docker sandbox, external triggers (webhooks/issues), multi-run parallelism per repo, self-improvement, VPS | Unchanged principle: each item enters only when a real need arrives |
@@ -138,6 +140,15 @@ changes, concretely:
 - **Queue.** One active run per repo, FIFO within a repo, repos concurrent — runs on
   one repo would step on each other's git state. Queued tasks show their position.
   Stdlib threads suffice at this scale; the GLM quota relief valves (§8) keep their order.
+- **RAM is guarded by the global run cap, not by the language.** The heavy part of a
+  run is the target repo's own E2E suite (Chrome instances, ~0.5 GB each), not the
+  orchestrator. A config cap on simultaneous runs, sized to the box's RAM, is the
+  whole policy — one-per-repo prevents git collisions, the cap prevents memory ones.
+- **Deployment (always-on home PC).** The daemon is meant to live on a dedicated
+  home PC serving many repos: a systemd user service for boot survival and
+  restart-on-crash, loopback binding kept, remote access from other devices via
+  SSH tunnel or Tailscale — no auth to build while the port never leaves loopback.
+  Crash recovery (below) is what makes an always-on daemon honest.
 - **Crash recovery.** If the daemon dies mid-run, the trace may keep a `running` row
   no one owns. On startup the daemon reaps such orphans — settles them failed in the
   trace and parks their cards as failed, re-runnable by the owner. The trace stays
@@ -237,9 +248,11 @@ local web board — columns **Backlog / Working / In PR** plus a separate **Arch
 section — the factory parks cards to ask (plan questions, plan approval, PR approval),
 and delivery means an open PR. Findings that must not enter the current PR become
 system-created Backlog cards for the owner to review and plan. Decisions in §2, design
-in the Phase 6–8 note; the old Phase 6 (scale) is demoted to Phase 9.
-**Next: Phase 6 (task board)** — tasks schema, `factory serve` daemon with a per-repo
-FIFO queue, create-task form, kanban view.
+in the Phase 6–8 note; the old Phase 6 (scale) is demoted to Phase 9. The daemon is
+meant to end up running on an always-on home PC serving many repos (deployment and
+the RAM run-cap in the design note).
+**Next: Phase 6 (task board)** — tasks schema, `repos:` roster section, `factory serve`
+daemon with a per-repo FIFO queue and a global run cap, create-task form, kanban view.
 
 **Phase 0 — CLOSED (2026-11-07).** Shipped: the `factory/` package (`config.py` roster
 loader + validator, `agent_pi.py` pi spawner with subprocess env injection, `env.py`
