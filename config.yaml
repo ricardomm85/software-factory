@@ -8,7 +8,6 @@ defaults:
 
 agents:
   - name: scout
-    thinking: low
     purpose: Read-only recon; answer questions about the repo without changing anything.
 
   - name: planner
@@ -16,5 +15,4 @@ agents:
     purpose: Turn a request into a plan the builder can implement without asking questions.
 
   - name: builder
-    thinking: low
     purpose: Implement the plan; propose a commit message; leave only what the plan allows.

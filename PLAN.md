@@ -90,10 +90,10 @@ The winner is declared in `config.yaml` as `coding_agent:` — never hardcoded.
 ③ `--mode json` streams typed JSONL events (`session`, `agent_start`, `message_*`,
 `tool_execution_*`, `turn_*`, `agent_end`) — the exact feed the SQLite tracer will consume.
 Working setup: provider `zai` in `~/.pi/agent/models.json` → `https://api.z.ai/api/paas/v4`
-(openai-completions). Keys resolve two-layer, like git config: the repo-local `.env`
-(gitignored, chmod 600, documented by the committed `.env.sample` — the sssf convention)
-wins, and `~/.config/factory/.env` is the cross-repo fallback; pi never sees the key in
-config files or argv. The plan serves the GLM-5.x family
+(openai-completions). Keys live in the repo-local `.env` (gitignored, chmod 600,
+documented by the committed `.env.sample` — the sssf convention). No global fallback:
+one repo, one key set — explicit over implicit. Pi never sees the key in config
+files or argv. The plan serves the GLM-5.x family
 (`glm-5.2` offers 1M context if a stronger planner is needed later).
 **Roster decision (2026-11-07): run every agent on `zai/glm-5.3-flash` for now** — phase
 differentiation comes from `thinking` levels, not model ids. Revisit per-role models once
@@ -158,7 +158,8 @@ planner on `zai/glm-5.2` high thinking, the rest on `zai/glm-5.3-flash`), `pypro
 (uv-managed; pyyaml runtime, pytest dev), and 10 passing unit tests. Live smoke:
 `uv run factory "<prompt>" --agent scout` spawned a real `zai/glm-5.3-flash` run that
 inspected the repo and answered. All agents run `zai/glm-5.3-flash` (planner keeps
-`thinking: high`). The SQLite schema originally listed under Phase 0 scope
+`thinking: high`; the rest inherit the `medium` default). The SQLite schema originally
+listed under Phase 0 scope
 moves to Phase 1 — it belongs with the tracer that defines its tables.
 **Next: Phase 1 (spine)** — `run` with id, `run.phase()` context manager, pydantic envelope
 with same-session retry, events → SQLite WAL, CLI commands `sessions`/`phases`.

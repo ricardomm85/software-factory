@@ -1,6 +1,5 @@
-"""Tests for the two-layer secret loader (repo-local .env wins, global fills gaps)."""
+"""Tests for the repo-local secret loader."""
 
-import factory.env as env_module
 from factory.env import load_env, parse_env
 
 
@@ -18,24 +17,10 @@ def test_parse_env_missing_file_is_empty(tmp_path):
     assert parse_env(tmp_path / "nope.env") == {}
 
 
-def test_repo_env_wins_and_global_fills_gaps(tmp_path, monkeypatch):
-    global_path = tmp_path / "global.env"
-    global_path.write_text("ZAI_API_KEY=global-key\nONLY_GLOBAL=1\n", encoding="utf-8")
-    monkeypatch.setattr(env_module, "GLOBAL_ENV_PATH", global_path)
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".env").write_text("ZAI_API_KEY=repo-key\n", encoding="utf-8")
-
-    merged = load_env(repo_dir=repo)
-    assert merged["ZAI_API_KEY"] == "repo-key"  # repo wins
-    assert merged["ONLY_GLOBAL"] == "1"  # global fills gaps
+def test_load_env_reads_repo_env(tmp_path):
+    (tmp_path / ".env").write_text("ZAI_API_KEY=abc123\n", encoding="utf-8")
+    assert load_env(tmp_path) == {"ZAI_API_KEY": "abc123"}
 
 
-def test_no_repo_env_falls_back_to_global(tmp_path, monkeypatch):
-    global_path = tmp_path / "global.env"
-    global_path.write_text("ZAI_API_KEY=global-key\n", encoding="utf-8")
-    monkeypatch.setattr(env_module, "GLOBAL_ENV_PATH", global_path)
-
-    merged = load_env(repo_dir=tmp_path / "does-not-exist")
-    assert merged == {"ZAI_API_KEY": "global-key"}
+def test_load_env_missing_repo_env_is_empty(tmp_path):
+    assert load_env(tmp_path) == {}

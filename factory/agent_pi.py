@@ -64,7 +64,7 @@ def run_pi(
 ) -> AgentResult:
     """Run one pi invocation with factory secrets injected. Never raises on agent failure.
 
-    Secrets resolve repo-local ``.env`` first (repo_dir), global fallback second.
+    Secrets come from the repo-local ``.env`` (repo_dir); there is no global fallback.
     """
     cmd = build_pi_command(prompt, model=model, session_id=session_id, mode=mode, thinking=thinking)
     env = os.environ.copy()
