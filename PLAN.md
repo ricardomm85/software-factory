@@ -251,7 +251,7 @@ was caught by the lens reviewers, scored ≥50 by the scorer, blocked by the gat
 the fixer in-session (file rewritten to compliant English), and the round-2 re-review came
 back clean — run `c7ec442f`, phases `review:*:r1 → score → gate → fix → review:*:r2 → score
 → gate`. Also surfaced and fixed two transport bugs en vivo (per-invocation timeout is now
-configurable; the first attempt timed out at 300s). 66 unit tests passing.
+configurable; the first attempt timed out at 300s). 68 unit tests passing.
 **v1 core is complete:** the factory now plans, builds, tests, reviews, and fixes itself.
 Natural next steps, in no fixed order: human checkpoints pre-commit (the deferred half of
 Phase 5), `context_handoff/` as first-class handoff storage, parallel reviewer execution
@@ -271,7 +271,7 @@ Two properties are enforced by SQLite, not by convention: every request opens th
 `query_only` connection (any accidental write raises), and WAL means the page renders
 while the factory is mid-write (covered by a test that holds an uncommitted writer
 transaction and fetches the index). All agent-produced text is HTML-escaped; long
-payloads collapse behind `<details>`. 12 new tests (78 total). Live verification against
+payloads collapse behind `<details>`. 15 new tests (83 total). Live verification against
 the real trace: index and run pages render Phases 1–4 history correctly
 (run `c7ec442f`: waterfall, accepted badge, pi counts).
 

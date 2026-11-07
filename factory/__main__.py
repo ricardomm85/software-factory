@@ -13,7 +13,6 @@ Commands:
 import argparse
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from .agent_pi import run_pi
@@ -22,7 +21,7 @@ from .config import ConfigError, load_config, resolve_agent
 from .db import connect
 from .envelope import RunOutput
 from .run import AgentPhaseError, Run, call_agent
-from .ui import serve
+from .ui import fmt_duration, make_server
 
 
 def _load_config(path: Path) -> dict:
@@ -32,15 +31,6 @@ def _load_config(path: Path) -> dict:
 
 def _resolve_agent(cfg: dict, name: str | None) -> dict:
     return resolve_agent(cfg, name)
-
-
-def _fmt_duration(started_at, ended_at) -> str:
-    """Human duration between two ISO timestamps; '' when either is missing."""
-    try:
-        t0, t1 = datetime.fromisoformat(started_at), datetime.fromisoformat(ended_at)
-        return f"{(t1 - t0).total_seconds():.0f}s"
-    except (TypeError, ValueError):
-        return ""
 
 
 def _db_path(cfg: dict, config_path: Path) -> Path:
@@ -201,15 +191,22 @@ def cmd_build_review(args) -> int:
 def cmd_ui(args) -> int:
     cfg = _load_config(args.config)
     db_path = _db_path(cfg, args.config)
-    print(f"factory ui → http://127.0.0.1:{args.port}/  (db: {db_path}) — Ctrl+C to stop")
+    if not 0 < args.port <= 65535:
+        print(f"invalid port {args.port}: must be 1-65535", file=sys.stderr)
+        return 2
     try:
-        serve(db_path, args.port)
-    except KeyboardInterrupt:
-        print("\nbye")
-        return 0
+        server = make_server(db_path, args.port)
     except OSError as exc:
         print(f"cannot serve on port {args.port}: {exc}", file=sys.stderr)
         return 2
+    # The banner only prints once the socket is actually bound.
+    print(f"factory ui → http://127.0.0.1:{args.port}/  (db: {db_path}) — Ctrl+C to stop")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nbye")
+    finally:
+        server.server_close()
     return 0
 
 
@@ -235,7 +232,7 @@ def cmd_phases(args) -> int:
     run = Run.get(conn, args.run_id)
     print(f"run {run.id}")
     for p in run.phases():
-        duration = _fmt_duration(p["started_at"], p["ended_at"])
+        duration = fmt_duration(p["started_at"], p["ended_at"])
         line = f"  #{p['seq']} {p['name']:10s} kind={p['kind']:5s} owner={p['owner']:8s} {p['status']}"
         if p["error"]:
             line += f"  error={p['error']}"

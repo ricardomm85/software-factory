@@ -159,3 +159,67 @@ def test_refresh_only_while_running(traced_db):
     live = Run.create(conn, request="watch me", agent="builder", model="m-1")
     page = render_run(ui_connect(db_path), live.id)[0]
     assert 'http-equiv="refresh"' in page             # a live run refreshes
+
+
+# --- regression tests from the multi-agent code review -----------------------
+
+
+def test_hostile_pi_event_type_is_escaped(traced_db):
+    db_path, run_id = traced_db
+    conn = connect(db_path)
+    run = Run.get(conn, run_id)
+    with run.phase(name="pwned", kind="agent", owner="builder") as phase:
+        phase.log("pi_event", {"type": "</details><img src=x onerror=alert(1)>"})
+    page, code = render_run(ui_connect(db_path), run_id)
+    assert code == 200
+    assert "<img src=x" not in page                     # nothing raw survives
+    assert "&lt;/details&gt;&lt;img src=x onerror=alert(1)&gt;" in page
+
+
+def test_truncation_marker_reports_omitted_chars(traced_db):
+    db_path, run_id = traced_db
+    conn = connect(db_path)
+    long_request = "x" * 200
+    live = Run.create(conn, request=long_request, agent="builder", model="m-1")
+    page = render_index(ui_connect(db_path))
+    assert f"[+{200 - 96} chars omitted]" in page
+    full_page, _ = render_run(ui_connect(db_path), live.id)
+    assert long_request in full_page                   # the run page is untruncated
+
+
+def test_sub_second_phases_get_proportional_bars(traced_db):
+    db_path, run_id = traced_db
+    page, code = render_run(ui_connect(db_path), run_id)
+    assert code == 200
+    assert "width:" in page                            # bars render from real seconds
+
+
+def test_render_error_becomes_a_page_not_a_drop(traced_db, monkeypatch):
+    import factory.ui as ui_module
+
+    db_path, _ = traced_db
+    monkeypatch.setattr(ui_module, "render_index", lambda conn: 1 / 0)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(db_path))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/")
+            raise AssertionError("expected a 500")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode()
+            assert "render error" in body and "ZeroDivisionError" in body
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_main_rejects_out_of_range_port(tmp_path):
+    from factory.__main__ import main
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "defaults:\n  coding_agent: pi\n  model: m\n"
+        "agents:\n  - name: a\n    purpose: p\n"
+    )
+    for bad_port in ("70000", "-1", "0"):
+        assert main(["ui", "--port", bad_port, "--config", str(cfg)]) == 2

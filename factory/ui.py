@@ -47,12 +47,12 @@ code{font-size:.85em}
 
 
 def ui_connect(db_path: Path) -> sqlite3.Connection:
-    """Open an existing trace db for reading only.
+    """Open a trace db for reading only.
 
-    ``query_only`` makes SQLite reject any write statement on this connection,
-    which is stronger than a coding convention: the UI cannot corrupt the trace
-    even if a rendering bug tried to. The file must already exist — the UI never
-    creates a database.
+    ``query_only`` makes SQLite reject any write statement on this connection —
+    the UI cannot corrupt the trace even if a rendering bug tried to. Note
+    ``sqlite3.connect`` would create a missing file; the request handler checks
+    existence before calling this, and no current caller bypasses that check.
     """
     conn = sqlite3.connect(db_path, timeout=5, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -84,13 +84,19 @@ def run_detail(conn: sqlite3.Connection, run_id: str):
     return run, phases, events
 
 
-def fmt_duration(started_at, ended_at) -> str:
-    """Human duration between two ISO timestamps; '' when either is missing."""
+def duration_seconds(started_at, ended_at) -> float | None:
+    """Seconds between two ISO timestamps; None when either is missing/invalid."""
     try:
         t0, t1 = datetime.fromisoformat(started_at), datetime.fromisoformat(ended_at)
-        return f"{(t1 - t0).total_seconds():.0f}s"
+        return (t1 - t0).total_seconds()
     except (TypeError, ValueError):
-        return ""
+        return None
+
+
+def fmt_duration(started_at, ended_at) -> str:
+    """Human duration between two ISO timestamps; '' when either is missing."""
+    secs = duration_seconds(started_at, ended_at)
+    return f"{secs:.0f}s" if secs is not None else ""
 
 
 # --- rendering ---------------------------------------------------------------
@@ -105,7 +111,10 @@ def _badge(status: str) -> str:
 
 
 def _short(text: str, cap: int = 96) -> str:
-    return text if len(text) <= cap else text[:cap] + " …"
+    """Truncate honestly: the marker says how much was left out."""
+    if len(text) <= cap:
+        return text
+    return f"{text[:cap]} … [+{len(text) - cap} chars omitted]"
 
 
 def _pretty_payload(payload: str) -> str:
@@ -182,8 +191,9 @@ def render_run(conn: sqlite3.Connection, run_id: str) -> tuple[str, int]:
     )
 
     # Waterfall: one row per phase, bar width proportional to its share of the run.
+    # Seconds come straight from the timestamps — no string round-trip.
+    totals = [duration_seconds(p["started_at"], p["ended_at"]) or 0.0 for p in phases]
     durations = [fmt_duration(p["started_at"], p["ended_at"]) for p in phases]
-    totals = [float(d[:-1]) if d else 0.0 for d in durations]
     total = sum(totals) or 1.0
     rows = []
     for p, dur, secs in zip(phases, durations, totals):
@@ -212,7 +222,7 @@ def render_run(conn: sqlite3.Connection, run_id: str) -> tuple[str, int]:
     for e in events:
         if e["type"] == "pi_event":
             try:
-                kind = json.loads(e["payload"]).get("type", "?")
+                kind = str(json.loads(e["payload"]).get("type", "?"))
             except ValueError:
                 kind = "?"
             pi_counts[f"{kind}"] = pi_counts.get(kind, 0) + 1
@@ -224,7 +234,8 @@ def render_run(conn: sqlite3.Connection, run_id: str) -> tuple[str, int]:
             )
     pi_summary = (
         "<details><summary class='muted'>"
-        f"{sum(pi_counts.values())} pi stream events ({', '.join(f'{k} × {v}' for k, v in sorted(pi_counts.items()))})"
+        f"{sum(pi_counts.values())} pi stream events "
+        f"({', '.join(f'{_esc(k)} × {v}' for k, v in sorted(pi_counts.items()))})"
         "</summary></details>"
         if pi_counts
         else ""
@@ -285,16 +296,24 @@ def make_handler(db_path: Path) -> type[BaseHTTPRequestHandler]:
             except sqlite3.Error as exc:
                 # e.g. a db file that exists but has no schema yet
                 self._send(_page("trace unavailable", f"<p>{_esc(exc)}</p>"), 200)
+            except Exception as exc:
+                # A rendering bug gets its own page, not a dropped connection.
+                self._send(
+                    _page("render error", f"<p>{_esc(type(exc).__name__)}: {_esc(exc)}</p>"), 500
+                )
             finally:
                 conn.close()
 
         def _send(self, body: str, code: int) -> None:
             data = body.encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except OSError:
+                pass  # the client hung up mid-refresh; a socket has no one to tell
 
         def log_message(self, *args) -> None:  # keep the terminal quiet
             pass
@@ -308,4 +327,9 @@ def make_server(db_path: Path, port: int) -> ThreadingHTTPServer:
 
 
 def serve(db_path: Path, port: int) -> None:
-    make_server(db_path, port).serve_forever()
+    """Bind, then serve until interrupted; always release the socket."""
+    server = make_server(db_path, port)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
