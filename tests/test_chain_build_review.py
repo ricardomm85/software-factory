@@ -134,3 +134,64 @@ def test_user_wip_survives_the_fixer(repo, tmp_path):
     assert accepted
     assert (repo / "fix.txt").exists()                                    # the fixer's claimed work survives
     assert (repo / "user_wip.txt").read_text() == "my work in progress\n"  # survived the fixer's gate
+
+
+def test_fixer_claimed_edit_to_a_baseline_file_is_sanctioned(repo, tmp_path):
+    (repo / "user_wip.txt").write_text("wip with a bug: espanol\n")
+    fix_build = (
+        '{"status": "success", "summary": "fixed the wip file", "artifacts": [], '
+        '"changed_files": ["user_wip.txt"], "commit_message": ""}'
+    )
+
+    def fix_baseline_file(repo_dir: Path):
+        (repo_dir / "user_wip.txt").write_text("wip fixed: english now\n")  # claims it too
+
+    agent = StubAgent(
+        [
+            BLOCKING_FINDINGS, BLOCKING_FINDINGS, BLOCKING_SCORED,
+            fix_build,
+            CLEAN_FINDINGS, CLEAN_FINDINGS, CLEAN_SCORED,
+        ],
+        side_effects=[None, None, None, fix_baseline_file, None, None, None],
+    )
+    conn = connect(tmp_path / "factory.db")
+    accepted, _ = run_build_review(
+        conn, repo_dir=repo, reviewer_cfgs=REVIEWERS, scorer_cfg=SCORER,
+        fixer_cfg=FIXER, max_rounds=2, agent_fn=agent,
+    )
+    assert accepted, "a claimed edit to a baseline file is sanctioned, not rolled back"
+    assert (repo / "user_wip.txt").read_text() == "wip fixed: english now\n"  # the fix survives
+
+
+def test_fixer_gate_violations_are_corrected_in_session(repo, tmp_path):
+    (repo / "wip.txt").write_text("work in progress\n")
+    bad_fix = (
+        '{"status": "success", "summary": "fixed", "artifacts": [], '
+        '"changed_files": ["fix.txt"], "commit_message": ""}'
+    )
+    good_fix = bad_fix  # same claims; the rogue file was already rolled back
+
+    def bad_then_good(repo_dir: Path):
+        if not (repo_dir / "fix.txt").exists():
+            (repo_dir / "fix.txt").write_text("fix\n")
+            (repo_dir / "rogue.txt").write_text("unclaimed debris\n")  # first attempt over-claims
+
+    agent = StubAgent(
+        [
+            BLOCKING_FINDINGS, BLOCKING_FINDINGS, BLOCKING_SCORED,
+            bad_fix, good_fix,
+            CLEAN_FINDINGS, CLEAN_FINDINGS, CLEAN_SCORED,
+        ],
+        side_effects=[None, None, None, bad_then_good, bad_then_good, None, None],
+    )
+    conn = connect(tmp_path / "factory.db")
+    accepted, _ = run_build_review(
+        conn, repo_dir=repo, reviewer_cfgs=REVIEWERS, scorer_cfg=SCORER,
+        fixer_cfg=FIXER, max_rounds=2, agent_fn=agent,
+    )
+    assert accepted
+    assert not (repo / "rogue.txt").exists()  # rolled back, then the correction landed
+    violations = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE type = 'fix_gate_violations'"
+    ).fetchone()[0]
+    assert violations == 1  # first attempt flagged, second attempt passed

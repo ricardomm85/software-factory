@@ -169,7 +169,7 @@ def _require_clean_tree(repo_dir: Path) -> int:
 def cmd_build_review(args) -> int:
     cfg = _load_config(args.config)
     repo_dir = args.config.parent
-    lens_names = args.lenses.split(",")
+    lens_names = [name.strip() for name in args.lenses.split(",") if name.strip()]
     reviewers = [_resolve_agent(cfg, name) for name in lens_names]
     scorer = _resolve_agent(cfg, args.scorer)
     fixer = _resolve_agent(cfg, args.fixer)
@@ -185,7 +185,9 @@ def cmd_build_review(args) -> int:
             max_rounds=args.max_rounds,
             timeout_s=args.timeout,
         )
-    except AgentPhaseError as exc:
+    except (AgentPhaseError, OSError) as exc:
+        # OSError covers a lens whose prompt template file is missing, and
+        # untracked-file read errors from the diff collector.
         print(f"build-review FAILED: {exc}", file=sys.stderr)
         return 1
     if reason:

@@ -326,9 +326,11 @@ def _working_tree_diff(repo_dir: Path, max_chars: int = 80000) -> str:
         if p.is_file():
             body += f"\n--- NEW FILE: {path} ---\n{p.read_text(encoding='utf-8', errors='replace')}\n"
     if len(body) > max_chars:
+        original_len = len(body)
         head = body[: max_chars // 2]
         tail = body[-max_chars // 4 :]
-        body = f"{head}\n\n[... diff truncated, {len(body) - max_chars} chars omitted ...]\n\n{tail}"
+        omitted = original_len - len(head) - len(tail)
+        body = f"{head}\n\n[... diff truncated, {omitted} chars omitted ...]\n\n{tail}"
     return body
 
 
@@ -387,6 +389,7 @@ def run_build_review(
                 scored = call_agent(
                     run, phase, score_prompt, scorer_cfg,
                     output_type=ScoredOutput, agent_fn=agent_fn, repo_dir=repo_dir,
+                    timeout_s=timeout_s,
                 )
                 phase.log("scored", {"count": len(scored.findings)})
 
@@ -410,23 +413,23 @@ def run_build_review(
 
             findings_json = json_dumps({"issues": [f.model_dump() for f in blocked]})
             with run.phase(f"fix:r{round_no}", kind="agent", owner=fixer_cfg["name"]) as phase:
+                # The fixer claims everything it touched — including edits to the
+                # user's baseline files; unclaimed changes are rolled back. Gate
+                # violations are corrected in-session (never cold-restart).
                 fix_prompt = _correction("fix_findings", findings=findings_json, diff=diff[:40000])
-                call_agent(
-                    run, phase, fix_prompt, fixer_cfg,
-                    output_type=BuildOutput, agent_fn=agent_fn, repo_dir=repo_dir,
-                )
-                claims = set(changed_files(repo_dir)) - baseline
-                fix_envelope = BuildOutput(
-                    status="success",
-                    summary="applied review fixes",
-                    artifacts=[],
-                    changed_files=sorted(claims),
-                )
-                reports = gate_reports(fix_envelope, repo_dir, allow=baseline)
-                phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
-                for report in reports:
-                    if not report.passed:
-                        run.log_event(phase.id, "fix_gate_violations", report.to_payload())
+                for attempt in range(1, 3):
+                    fix_envelope = call_agent(
+                        run, phase, fix_prompt, fixer_cfg,
+                        output_type=BuildOutput, agent_fn=agent_fn, repo_dir=repo_dir,
+                        timeout_s=timeout_s,
+                    )
+                    reports = gate_reports(fix_envelope, repo_dir, allow=baseline)
+                    phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
+                    if all(r.passed for r in reports):
+                        break
+                    violations = _violations(reports)
+                    run.log_event(phase.id, "fix_gate_violations", {"violations": violations})
+                    fix_prompt = f"{fix_prompt}\n\n{_correction('gate_correction', violations='\\n'.join(violations))}"
     except BaseException as exc:
         run.finish(accepted=False, reason=f"{type(exc).__name__}: {exc}")
         raise
