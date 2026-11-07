@@ -91,10 +91,11 @@ The winner is declared in `config.yaml` as `coding_agent:` — never hardcoded.
 `tool_execution_*`, `turn_*`, `agent_end`) — the exact feed the SQLite tracer will consume.
 Working setup: provider `zai` in `~/.pi/agent/models.json` → `https://api.z.ai/api/paas/v4`
 (openai-completions), key interpolated from `~/.config/factory/.env` (`ZAI_API_KEY`, 600 perms,
-outside any repo; pi never sees the key in config). The plan serves the GLM-5.x family:
-`glm-5.2` (1M context) → planner/reviewer candidate; `glm-5.3-flash` (fast) → builder
-candidate; also `glm-5.3`, `glm-5.3-flashx`, `glm-4.7`, `glm-5-turbo`. `~/.pi/` is machine
-config, never committed; the factory repo will stamp its own copy for other machines.
+outside any repo; pi never sees the key in config). The plan serves the GLM-5.x family
+(`glm-5.2` offers 1M context if a stronger planner is needed later).
+**Roster decision (2026-11-07): run every agent on `zai/glm-5.3-flash` for now** — phase
+differentiation comes from `thinking` levels, not model ids. Revisit per-role models once
+there is real cost/latency data per phase.
 
 **Candidates evaluated (2026-11-07):** current recommendation = **pi** (native orchestration,
 minimal, frictionless Z.AI; [models.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md)).
@@ -154,7 +155,8 @@ loader for `~/.config/factory/.env`, `__main__.py` CLI `factory "prompt" [--agen
 planner on `zai/glm-5.2` high thinking, the rest on `zai/glm-5.3-flash`), `pyproject.toml`
 (uv-managed; pyyaml runtime, pytest dev), and 10 passing unit tests. Live smoke:
 `uv run factory "<prompt>" --agent scout` spawned a real `zai/glm-5.3-flash` run that
-inspected the repo and answered. The SQLite schema originally listed under Phase 0 scope
+inspected the repo and answered. All agents run `zai/glm-5.3-flash` (planner keeps
+`thinking: high`). The SQLite schema originally listed under Phase 0 scope
 moves to Phase 1 — it belongs with the tracer that defines its tables.
 **Next: Phase 1 (spine)** — `run` with id, `run.phase()` context manager, pydantic envelope
 with same-session retry, events → SQLite WAL, CLI commands `sessions`/`phases`.

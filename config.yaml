@@ -12,8 +12,7 @@ agents:
     purpose: Read-only recon; answer questions about the repo without changing anything.
 
   - name: planner
-    model: zai/glm-5.2             # 1M context: reads the whole repo before deciding
-    thinking: high
+    thinking: high                 # same model for every agent for now; effort is what differs
     purpose: Turn a request into a plan the builder can implement without asking questions.
 
   - name: builder
