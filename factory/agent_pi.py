@@ -76,10 +76,16 @@ def run_pi(
         )
     except subprocess.TimeoutExpired as exc:
         elapsed = int((time.monotonic() - started) * 1000)
+        # TimeoutExpired carries bytes even with text=True — decode before returning.
+        stdout, stderr = exc.stdout or "", exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode(errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
         return AgentResult(
             exit_code=-1,
-            stdout=exc.stdout or "",
-            stderr=exc.stderr or "",
+            stdout=stdout,
+            stderr=stderr,
             duration_ms=elapsed,
             command=cmd,
             timed_out=True,

@@ -6,7 +6,7 @@ __pycache__/
 # Runtime data (trace DB, sessions) — never commit
 data/
 
-# Secrets — the only allowed location is ~/.config/factory/.env (outside any repo)
+# Secrets — repo-local .env only (gitignored; see .env.sample). No global location.
 .env
 
 # Tooling noise

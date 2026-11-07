@@ -70,3 +70,15 @@ def test_bad_thinking_level_is_rejected(tmp_path):
     text = VALID.replace("thinking: medium", "thinking: turbo")
     with pytest.raises(ConfigError, match="thinking"):
         load_config(write(tmp_path, text))
+
+
+def test_bare_off_is_rejected_with_quoting_hint(tmp_path):
+    text = VALID.replace("thinking: medium", "thinking: off")
+    with pytest.raises(ConfigError, match="quote the value"):
+        load_config(write(tmp_path, text))
+
+
+def test_quoted_off_is_accepted(tmp_path):
+    text = VALID.replace("thinking: medium", "thinking: 'off'")
+    cfg = load_config(write(tmp_path, text))
+    assert resolve_agent(cfg, None)["thinking"] == "off"

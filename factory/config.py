@@ -77,6 +77,12 @@ def _validate_model(model, where: str) -> None:
 def _validate_thinking(thinking, where: str) -> None:
     if thinking is None:
         return
+    if isinstance(thinking, bool):
+        # YAML 1.1 parses bare on/off/yes/no as booleans — require quoting.
+        raise ConfigError(
+            f"{where}: bare off/on/yes/no are parsed as booleans by YAML; "
+            f"quote the value, e.g. {where}: 'off'"
+        )
     if thinking not in THINKING_LEVELS:
         allowed = "|".join(sorted(THINKING_LEVELS))
         raise ConfigError(f"{where} must be one of: {allowed} (got {thinking!r})")

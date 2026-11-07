@@ -1,6 +1,6 @@
 # Plan — Personal Software Factory
 
-**Date:** 2026-11-07 · **Status:** planned, no code yet · **Workspace:** `~/Projects/software-factory`
+**Date:** 2026-11-07 · **Status:** Phase 0 closed — Phase 1 (spine) next · **Workspace:** `~/Projects/software-factory`
 
 ## 1. Goal
 
@@ -151,11 +151,11 @@ Rules specific to self-hosting:
 ## 9. Next step
 
 **Phase 0 — CLOSED (2026-11-07).** Shipped: the `factory/` package (`config.py` roster
-loader + validator, `agent_pi.py` pi spawner with subprocess env injection, `env.py` secret
-loader for `~/.config/factory/.env`, `__main__.py` CLI `factory "prompt" [--agent NAME]
+loader + validator, `agent_pi.py` pi spawner with subprocess env injection, `env.py`
+repo-local secret loader, `__main__.py` CLI `factory "prompt" [--agent NAME]
 [--mode print|json]`), the starter roster in `config.yaml` (scout / planner / builder —
-planner on `zai/glm-5.2` high thinking, the rest on `zai/glm-5.3-flash`), `pyproject.toml`
-(uv-managed; pyyaml runtime, pytest dev), and 10 passing unit tests. Live smoke:
+all on `zai/glm-5.3-flash`; planner keeps `thinking: high`, the rest inherit `medium`),
+`pyproject.toml` (uv-managed; pyyaml runtime, pytest dev), and 14 passing unit tests. Live smoke:
 `uv run factory "<prompt>" --agent scout` spawned a real `zai/glm-5.3-flash` run that
 inspected the repo and answered. All agents run `zai/glm-5.3-flash` (planner keeps
 `thinking: high`; the rest inherit the `medium` default). The SQLite schema originally
