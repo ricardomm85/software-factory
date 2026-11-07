@@ -3,6 +3,8 @@
 Commands:
   factory run "<prompt>"        one agent phase inside a traced run (the spine)
   factory build-test "<prompt>" builder + code(test) with a bounded fix loop (gates + rollback)
+  factory build-review          multi-lens review of the working-tree changes (gates + fix rounds)
+  factory ui                    read-only local web UI over the trace (runs, phase waterfall)
   factory sessions              list traced runs
   factory phases <run_id>       list phases of one run
   factory prompt "<prompt>"     raw one-shot agent call, no trace (debug helper)
@@ -11,7 +13,6 @@ Commands:
 import argparse
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from .agent_pi import run_pi
@@ -20,6 +21,7 @@ from .config import ConfigError, load_config, resolve_agent
 from .db import connect
 from .envelope import RunOutput
 from .run import AgentPhaseError, Run, call_agent
+from .ui import fmt_duration, make_server
 
 
 def _load_config(path: Path) -> dict:
@@ -29,15 +31,6 @@ def _load_config(path: Path) -> dict:
 
 def _resolve_agent(cfg: dict, name: str | None) -> dict:
     return resolve_agent(cfg, name)
-
-
-def _fmt_duration(started_at, ended_at) -> str:
-    """Human duration between two ISO timestamps; '' when either is missing."""
-    try:
-        t0, t1 = datetime.fromisoformat(started_at), datetime.fromisoformat(ended_at)
-        return f"{(t1 - t0).total_seconds():.0f}s"
-    except (TypeError, ValueError):
-        return ""
 
 
 def _db_path(cfg: dict, config_path: Path) -> Path:
@@ -195,6 +188,28 @@ def cmd_build_review(args) -> int:
     return 0 if accepted else 1
 
 
+def cmd_ui(args) -> int:
+    cfg = _load_config(args.config)
+    db_path = _db_path(cfg, args.config)
+    if not 0 < args.port <= 65535:
+        print(f"invalid port {args.port}: must be 1-65535", file=sys.stderr)
+        return 2
+    try:
+        server = make_server(db_path, args.port)
+    except OSError as exc:
+        print(f"cannot serve on port {args.port}: {exc}", file=sys.stderr)
+        return 2
+    # The banner only prints once the socket is actually bound.
+    print(f"factory ui → http://127.0.0.1:{args.port}/  (db: {db_path}) — Ctrl+C to stop")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nbye")
+    finally:
+        server.server_close()
+    return 0
+
+
 def cmd_sessions(args) -> int:
     cfg = _load_config(args.config)
     conn = connect(_db_path(cfg, args.config))
@@ -217,7 +232,7 @@ def cmd_phases(args) -> int:
     run = Run.get(conn, args.run_id)
     print(f"run {run.id}")
     for p in run.phases():
-        duration = _fmt_duration(p["started_at"], p["ended_at"])
+        duration = fmt_duration(p["started_at"], p["ended_at"])
         line = f"  #{p['seq']} {p['name']:10s} kind={p['kind']:5s} owner={p['owner']:8s} {p['status']}"
         if p["error"]:
             line += f"  error={p['error']}"
@@ -296,6 +311,14 @@ def main(argv: list[str] | None = None) -> int:
     p_br.add_argument("--timeout", type=int, default=600, help="Per-invocation agent timeout in seconds")
     p_br.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_br.set_defaults(func=cmd_build_review)
+
+    p_ui = sub.add_parser(
+        "ui",
+        help="read-only local web UI over the trace (binds 127.0.0.1 only)",
+    )
+    p_ui.add_argument("--port", type=int, default=8666, help="Local port to serve on")
+    p_ui.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
+    p_ui.set_defaults(func=cmd_ui)
 
     p_sessions = sub.add_parser("sessions", help="list traced runs")
     p_sessions.add_argument("--limit", type=int, default=20)
