@@ -155,7 +155,7 @@ loader + validator, `agent_pi.py` pi spawner with subprocess env injection, `env
 repo-local secret loader, `__main__.py` CLI `factory "prompt" [--agent NAME]
 [--mode print|json]`), the starter roster in `config.yaml` (scout / planner / builder —
 all on `zai/glm-5.3-flash`; planner keeps `thinking: high`, the rest inherit `medium`),
-`pyproject.toml` (uv-managed; pyyaml runtime, pytest dev), and 14 passing unit tests. Live smoke:
+`pyproject.toml` (uv-managed; pyyaml runtime, pytest dev), and 16 passing unit tests. Live smoke:
 `uv run factory "<prompt>" --agent scout` spawned a real `zai/glm-5.3-flash` run that
 inspected the repo and answered. All agents run `zai/glm-5.3-flash` (planner keeps
 `thinking: high`; the rest inherit the `medium` default). The SQLite schema originally
