@@ -1,12 +1,17 @@
 # Plan — Personal Software Factory
 
-**Date:** 2026-11-07 · **Status:** Phases 0–5 closed — v1 shipped and observable; remaining: Phase 6 (scale, v2) and the polish items in §9 · **Workspace:** `~/Projects/software-factory`
+**Date:** 2026-11-07 · **Status:** Phases 0–5 closed — v1 shipped and observable. **Pivot (2026-11-07): the web board takes over as the primary interface** (see the Phase 6–8 design note) — remaining: Phase 6 task board · Phase 7 web human gates · Phase 8 PR delivery + discovered work · Phase 9 scale · **Workspace:** `~/Projects/software-factory`
 
 ## 1. Goal
 
 A personal factory to ship **features in my own repos** through agent chains
 (plan → build → test → review), where **the Python code owns the loop** and agents are
 bounded nodes inside it. Governing principle: *"Agent proposes, code disposes."*
+
+Since the 2026-11-07 pivot the primary interface is the **local web board**: create a
+task, watch the card move across the kanban, and answer when the factory parks it to
+ask. The CLI keeps running the same chains underneath — it becomes the engine's debug
+surface, not the owner's desk.
 
 ## 2. Decisions made
 
@@ -18,6 +23,10 @@ bounded nodes inside it. Governing principle: *"Agent proposes, code disposes."*
 | Starting point | From scratch, copying sssf's **shape** (not its code) | Full ownership, fits the use case from day 1 |
 | Agent backend | Harness abstracted in config (`coding_agent:`) — concrete decision in Phase 0 | Switching CLI/provider must be config, not code |
 | Language | All docs and code in English (see [AGENTS.md](AGENTS.md)); conversation with the owner in Spanish | Repo artifacts stay in-distribution for agents and shareable |
+| Interface (pivot 2026-11-07) | Web board first (kanban at localhost), CLI kept as debug surface | The owner directs work from the board; watching and answering beats terminal flags |
+| Board shape | Columns **Backlog / Working / In PR** plus a separate **Archived** section; pauses show as a waiting badge on the Working card | The board stays calm; "someone has to answer this" is a badge, not a fifth column |
+| Concurrency | One active run per repo; per-repo FIFO queue; repos in parallel | Runs on the same repo would step on each other's git state |
+| Delivery | PR on GitHub (branch per task → push → `gh pr create`); card lands in In PR, moves to Archived on merge | Reviewable, revertible, and matches how the owner ships |
 
 ## 3. The shape (what we copy from sssf)
 
@@ -45,8 +54,12 @@ Consolidated from the landscape (Warp, Factory.com, Huntley, MetaGPT, sssf):
 
 - **v1:** A. execution spine · B. contracts (envelopes/gates) · C. basic observability ·
   D. config-as-code · **+ basic I**: cost per run in the trace and a small home-grown eval.
-- **v2 (when it hurts):** E. fleet/parallelism · F. human checkpoints by risk ·
-  G. triggers (webhooks/issues) · H. branch-per-run + sandbox · advanced I (self-improvement).
+- **v2 (redefined 2026-11-07):** the **web board** is the new v2 core — J. task board +
+  execution daemon · K. web-mediated human gates (plan questions, plan approval, PR
+  approval) · L. PR delivery + system-discovered cards. Two old v2 items arrive inside
+  it: branch-per-run (as branch-per-task with PR delivery) and human checkpoints (as
+  board pauses). Still deferred until it hurts: Docker sandbox · external triggers
+  (webhooks/issues) · multi-run parallelism per repo · advanced self-improvement.
 
 ## 5. Phases
 
@@ -58,7 +71,10 @@ Consolidated from the landscape (Warp, Factory.com, Huntley, MetaGPT, sssf):
 | 3 | **Standard chain** | planner + inter-agent handoff, commit phase owned by code (builder proposes the message), YAML roster with multiple models | `factory plan-build-test` — real features end-to-end. **Milestone: first self-hosted commit** — the factory ships a non-core change to this very repo (see §7) |
 | 4 | **Review + measurement** | multi-lens reviewer fan-out (see design note below), revise loop, `quality.py` with real commands (no placeholders), `run.finish(accepted=)`, tokens/cost per run in the trace, home-grown eval (5–10 known tasks from your repos) | `factory simple-sdlc` + cost/success scorecard per run |
 | 5 | **Observability product** | read-only UI over SQLite (per-phase waterfall), optional human checkpoints pre-commit | Watch a full run live without reading transcripts |
-| 6 | **Scale (v2)** | parallelism, branch-per-run + Docker sandbox, GitHub triggers, risk-based checkpoints, self-improvement, VPS if needed | Runs in parallel without direct supervision |
+| 6 | **Task board** | `tasks` table (cards: title, prompt, repo, origin owner\|system, status, latest run), `factory serve` daemon owning execution (stdlib threads; one active run per repo, FIFO per repo), create-task form, kanban view — columns **Backlog / Working / In PR** + separate **Archived** section, card detail = the existing run page | Create a task in the browser and watch it execute without a terminal |
+| 7 | **Web human gates** | `pauses` table (type `questions` \| `plan_approval` \| `pr_approval`; request, answer, status); plan envelope gains `questions` — the card parks with a waiting badge, you answer from the board, the same session resumes; plan approval before build; PR approval before push; CLI keeps the stdin checkpoint | A task cannot pass plan, build-start, or push without a board decision |
+| 8 | **PR delivery + discovered work** | branch per task off the default branch, commit, push, `gh pr create`, PR URL on the card (column In PR; Archived on merge); envelopes gain `discovered` findings that must NOT enter this PR — deterministic code turns them into Backlog cards with `origin_run` provenance | Card lands in In PR with its URL; out-of-scope findings become new cards, never silent scope creep |
+| 9 | **Scale, when it hurts** | Docker sandbox, external triggers (webhooks/issues), multi-run parallelism per repo, self-improvement, VPS | Unchanged principle: each item enters only when a real need arrives |
 
 Every phase ends in something **runnable**, not something designed.
 
@@ -80,6 +96,52 @@ reviewer becomes a **fan-out of bounded review agents** instead of a single revi
   prompts): the deep bug lenses are where reasoning pays — the two grave Phase 1 findings
   (stderr deadlock, tracer threading) only surfaced there — while everything else runs
   cheaper. Bounded prompts + per-role effort keep the factory version a fraction of the cost.
+
+### Phase 6–8 design note — the board takes over (added 2026-11-07)
+
+After watching v1 run from the terminal, the owner moved the desk to the browser:
+create a task, watch the card move, answer when the factory parks it to ask. What
+changes, concretely:
+
+- **One long-lived `factory serve` owns execution.** The current `factory ui` grows
+  into it: same stdlib server, same loopback-only binding, same run-detail page —
+  plus the board and a create-task form. The server writes (task creation, pause
+  resolution) through the same deterministic code paths the CLI uses; render
+  connections stay `query_only`. The UI's read-only guarantee doesn't relax —
+  it stops being the whole story.
+- **Tasks are cards; runs are executions.** New `tasks` table (title, prompt, repo,
+  origin: `owner|system`, status, latest run). Executing a task creates a run exactly
+  as the CLI does today — the sessions schema is untouched. Card position derives from
+  task state + open pauses: **Backlog** → **Working** (a waiting badge while a pause
+  is open; a failed badge on a failed run, re-runnable) → **In PR** → **Archived**
+  (on merge, or archived by the owner).
+- **Pauses are rows, not callbacks.** New `pauses` table (run, phase, type:
+  `questions` | `plan_approval` | `pr_approval`; request payload, answer, status).
+  The chain's human-gate callback blocks on an event bound to the pause row in web
+  mode; the CLI keeps the stdin callback. SQLite WAL remains the one transport —
+  no WebSockets, polling stays.
+- **Questions and plan approval extend the plan envelope.** `PlanOutput` gains
+  `questions` — doubts raised before/while planning. The card parks in Working with
+  the waiting badge; the owner answers from the board; answers re-enter the SAME pi
+  session (resume by id, per the ground rules). Plan approval then shows the plan
+  file — approve, or correct (same-session resume again). The stdin pre-commit
+  checkpoint becomes the board's PR approval: see the diff, approve → push.
+- **PR delivery.** Each task runs on its own branch off the repo's default branch;
+  when the owner approves, code commits, pushes, and opens the PR (`gh pr create`);
+  the card shows the PR URL and lands in In PR. This quietly delivers the old v2's
+  branch-per-run for board tasks; CLI chains keep their local-commit behavior.
+- **Discovered work is scope discipline, enforced by code.** Build/test/review
+  envelopes gain `discovered: [{title, detail}]` — findings that must NOT enter the
+  current PR. The fixer and gates may not absorb them; after the phase, deterministic
+  code creates Backlog cards with `origin_run` provenance. The factory may propose
+  work; only the owner promotes it.
+- **Queue.** One active run per repo, FIFO within a repo, repos concurrent — runs on
+  one repo would step on each other's git state. Queued tasks show their position.
+  Stdlib threads suffice at this scale; the GLM quota relief valves (§8) keep their order.
+- **Crash recovery.** If the daemon dies mid-run, the trace may keep a `running` row
+  no one owns. On startup the daemon reaps such orphans — settles them failed in the
+  trace and parks their cards as failed, re-runnable by the owner. The trace stays
+  the source of truth.
 
 ## 6. Agent backend and cost (Phase 0 decision)
 
@@ -148,8 +210,8 @@ Rules specific to self-hosting:
   the machinery that grades it (`factory/` core, `gates.py`). That is sssf's rule already;
   for this repo it is critical.
 - **The factory never merges into its own core unreviewed**: core edits require a human
-  checkpoint — and, until v2's branch-per-run exists, at least a clean tree plus a manual
-  branch before the run starts.
+  checkpoint — and, until Phase 8's branch-per-task exists, at least a clean tree plus a
+  manual branch before the run starts.
 - **Infinite regress is real**: a bug in the orchestrator can break the runs trying to fix it.
   If the factory is on fire, core fixes go back to the usual tools.
 - **Shape decisions stay human**: adding a phase, changing the envelope contract, swapping
@@ -168,6 +230,16 @@ Rules specific to self-hosting:
   lower `thinking`, faster GLM models within z.ai, and OpenRouter only at the end.
 
 ## 9. Next step
+
+**Pivot (2026-11-07) — the board becomes the product.** After shipping and using v1 from
+the terminal, the owner redefined the interface: tasks are created and directed from the
+local web board — columns **Backlog / Working / In PR** plus a separate **Archived**
+section — the factory parks cards to ask (plan questions, plan approval, PR approval),
+and delivery means an open PR. Findings that must not enter the current PR become
+system-created Backlog cards for the owner to review and plan. Decisions in §2, design
+in the Phase 6–8 note; the old Phase 6 (scale) is demoted to Phase 9.
+**Next: Phase 6 (task board)** — tasks schema, `factory serve` daemon with a per-repo
+FIFO queue, create-task form, kanban view.
 
 **Phase 0 — CLOSED (2026-11-07).** Shipped: the `factory/` package (`config.py` roster
 loader + validator, `agent_pi.py` pi spawner with subprocess env injection, `env.py`
