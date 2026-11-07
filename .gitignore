@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Runtime data (trace DB, sessions) — never commit
+data/
+
+# Secrets — the only allowed location is ~/.config/factory/.env (outside any repo)
+.env
+
+# Tooling noise
+.pytest_cache/

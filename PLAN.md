@@ -147,9 +147,18 @@ Rules specific to self-hosting:
 
 ## 9. Next step
 
-**Phase 0 wrap-up**: harness confirmed (see §6 spike result). Remaining to close Phase 0:
-repo skeleton (`factory/` package, `config.yaml`, SQLite schema) + a minimal Python script
-that spawns `pi` headless and captures its output. Then Phase 1 (spine).
+**Phase 0 — CLOSED (2026-11-07).** Shipped: the `factory/` package (`config.py` roster
+loader + validator, `agent_pi.py` pi spawner with subprocess env injection, `env.py` secret
+loader for `~/.config/factory/.env`, `__main__.py` CLI `factory "prompt" [--agent NAME]
+[--mode print|json]`), the starter roster in `config.yaml` (scout / planner / builder —
+planner on `zai/glm-5.2` high thinking, the rest on `zai/glm-5.3-flash`), `pyproject.toml`
+(uv-managed; pyyaml runtime, pytest dev), and 10 passing unit tests. Live smoke:
+`uv run factory "<prompt>" --agent scout` spawned a real `zai/glm-5.3-flash` run that
+inspected the repo and answered. The SQLite schema originally listed under Phase 0 scope
+moves to Phase 1 — it belongs with the tracer that defines its tables.
+**Next: Phase 1 (spine)** — `run` with id, `run.phase()` context manager, pydantic envelope
+with same-session retry, events → SQLite WAL, CLI commands `sessions`/`phases`.
+Deliverable: `factory run "<prompt>"` with a queryable trace.
 
 ## References
 
