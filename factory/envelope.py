@@ -42,6 +42,15 @@ class BuildOutput(EnvelopeBase):
     commit_message: str = ""
 
 
+class PlanOutput(EnvelopeBase):
+    """Output type for planner phases: a plan file another agent can implement
+    without asking questions. The plan's path is declared both in ``plan_path``
+    and in ``artifacts`` — the artifacts gate verifies it exists and is non-empty.
+    """
+
+    plan_path: str = ""
+
+
 def extract_json(text: str) -> dict:
     """Pull a JSON object out of agent text, tolerating fences and stray prose."""
     cleaned = FENCE_RE.sub("", text)

@@ -1,6 +1,6 @@
 # Plan — Personal Software Factory
 
-**Date:** 2026-11-07 · **Status:** Phases 0–2 closed — Phase 3 (standard chain) next · **Workspace:** `~/Projects/software-factory`
+**Date:** 2026-11-07 · **Status:** Phases 0–3 closed — Phase 4 (multi-lens review) next · **Workspace:** `~/Projects/software-factory`
 
 ## 1. Goal
 
@@ -217,6 +217,23 @@ it in `changed_files`, gates verified it against the real `git status`, pytest r
 **Next: Phase 3 (standard chain)** — planner + inter-agent handoff (`context_handoff/`,
 envelope injected into the next prompt), commit phase owned by code, multi-model roster
 options. Deliverable: `factory plan-build-test "<prompt>"`.
+
+**Phase 3 — CLOSED (2026-11-07).** Shipped: `factory/chains.py::run_plan_build_test`
+(plan → handoff → commit:plan → gated build→test rounds → code-owned commit; the plan
+crosses agents as a file whose content is injected into the builder's prompt — context
+transfers in code, not conversation; two author-flavored commits when green: the plan,
+then the implementation carrying the builder's proposed message), the `PlanOutput`
+envelope (`plan_path` + `artifacts`, verified by the artifacts gate),
+`prompts/plan_instruction.md`, and the CLI `factory plan-build-test`
+(`--planner/--builder/--test-command/--max-rounds`; shares the clean-tree precondition
+and test-command resolution with build-test).
+**Milestone: first self-hosted commit.** Run `ecd4459c` accepted on this very repo: the
+planner investigated and wrote `specs/ecd4459c-plan.md`, gates failed rounds 1–2 (unclaimed
+changes rolled back, corrected in the same session), round 3 went green, pytest passed, and
+the chain landed `6fcd1c6` (plan) + `13ac23c` (implementation) by itself. 60 unit tests
+passing.
+**Next: Phase 4 (multi-lens review)** — per the design note in §5: reviewer fan-out with
+typed findings envelopes, a scoring phase, and the ≥50 threshold as a deterministic gate.
 
 ## References
 
