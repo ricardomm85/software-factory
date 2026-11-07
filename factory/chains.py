@@ -203,11 +203,12 @@ def run_plan_build_test(
     agent_fn=run_pi_streaming,
     test_fn=run_test_command,
 ) -> tuple[bool, str]:
-    """The standard chain: plan → handoff → commit:plan → build/test rounds → commit.
+    """The standard chain: plan → plan gates → handoff → commit:plan → build/test rounds
+    → commit.
 
-    Lands two commits when everything is green: the planner's plan and the
-    builder's implementation, each with its own author-flavored message.
-    Returns (accepted, reason).
+    Lands the planner's plan commit and the builder's implementation commit (carrying the
+    builder's proposed message) when the planner ships a plan file; degrades to a single
+    implementation commit when it doesn't. Returns (accepted, reason).
     """
     run = Run.create(
         conn, request=f"plan-build-test: {request}", agent=planner_cfg["name"], model=planner_cfg["model"]
@@ -229,9 +230,36 @@ def run_plan_build_test(
             run.finish(accepted=False, reason=reason)
             return False, reason
 
+        # Gate the planner's work exactly like the builder's: the plan file must
+        # exist and be claimed, and nothing unclaimed survives (rolled back).
+        plan_rel = plan_envelope.plan_path or (plan_envelope.artifacts[0] if plan_envelope.artifacts else "")
+        plan_claim = BuildOutput(
+            status=plan_envelope.status,
+            summary=plan_envelope.summary,
+            artifacts=plan_envelope.artifacts,
+            changed_files=[plan_rel] if plan_rel else [],
+        )
+        with run.phase("plan_gates", kind="code", owner="code") as phase:
+            reports = [
+                run_output_gate(plan_claim),
+                artifacts_exist(plan_claim, repo_dir),
+                diff_matches_claims(plan_claim, repo_dir, rollback=True),
+            ]
+            phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
+        # A missing/empty plan kills the chain (the builder has nothing to implement).
+        # A rolled-back debris violation is already remediated — it stays in the trace
+        # and the chain continues.
+        artifacts_report = next(r for r in reports if r.gate == "artifacts_exist")
+        violations = _violations(reports)
+        if not artifacts_report.passed:
+            reason = "planner gates failed: " + "; ".join(violations)
+            run.finish(accepted=False, reason=reason)
+            return False, reason
+        if violations:
+            run.log_event(None, "plan_gate_violations", {"violations": violations})
+
         # Handoff: the plan crosses agents as a file plus its content in the
         # builder's prompt — context transfers in code, not in conversation.
-        plan_rel = plan_envelope.plan_path or (plan_envelope.artifacts[0] if plan_envelope.artifacts else "")
         plan_text = ""
         if plan_rel and (repo_dir / plan_rel).is_file():
             plan_text = (repo_dir / plan_rel).read_text(encoding="utf-8")
@@ -254,10 +282,8 @@ def run_plan_build_test(
             with run.phase("commit:plan", kind="code", owner="git") as phase:
                 phase.log("commit", {"sha": sha, "message": plan_message})
 
-        builder_prompt = (
-            f"{request}\n\n"
-            f"## Implementation plan (from {planner_cfg['name']})\n\n{plan_text}\n\n"
-            "Implement this plan. changed_files must declare EVERY file you change."
+        builder_prompt = _correction(
+            "builder_handoff", request=request, planner=planner_cfg["name"], plan_text=plan_text
         )
         accepted, reason, build_envelope = _build_test_rounds(
             run, builder_prompt, builder_cfg, test_command, repo_dir, max_rounds, agent_fn, test_fn

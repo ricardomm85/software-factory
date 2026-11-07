@@ -97,7 +97,7 @@ def test_green_chain_lands_plan_and_code_commits(repo, tmp_path):
     phases = [r["name"] for r in conn.execute(
         "SELECT name FROM phases ORDER BY seq"
     ).fetchall()]
-    assert phases == ["plan", "handoff", "commit:plan", "build:r1", "test:r1", "commit"]
+    assert phases == ["plan", "plan_gates", "handoff", "commit:plan", "build:r1", "test:r1", "commit"]
 
     status = conn.execute("SELECT status FROM sessions").fetchone()[0]
     assert status == "accepted"
@@ -138,3 +138,37 @@ def test_fallback_commit_message_when_builder_stays_silent(repo, tmp_path):
     subject = _commits(repo)[0]
     assert subject.startswith("factory(")  # code-owned fallback wording
     assert "implemented the plan" in subject
+
+
+def test_planner_debris_is_rolled_back_at_plan_gates(repo, tmp_path):
+    def write_plan_and_rogue(repo_dir: Path):
+        write_plan(repo_dir)
+        (repo_dir / "rogue.txt").write_text("planner debris\n")
+
+    agent = StubAgent([PLAN_JSON, BUILD_JSON], side_effects=[write_plan_and_rogue, write_feature])
+    tests = StubTests([0])
+    conn = connect(tmp_path / "factory.db")
+    accepted, reason = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=agent, test_fn=tests,
+    )
+    assert accepted, reason
+    assert not (repo / "rogue.txt").exists()  # plan_gates rolled the debris back
+    assert all("rogue" not in s for s in _commits(repo))
+
+
+def test_missing_plan_file_fails_at_plan_gates_without_builder(repo, tmp_path):
+    no_file = (
+        '{"status": "success", "summary": "plan ready", '
+        '"artifacts": ["specs/plan.md"], "plan_path": "specs/plan.md", "notes_for_next_agent": ""}'
+    )
+    agent = StubAgent([no_file])  # declares the plan but never writes it
+    tests = StubTests([])
+    conn = connect(tmp_path / "factory.db")
+    accepted, reason = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=agent, test_fn=tests,
+    )
+    assert not accepted
+    assert "planner gates failed" in reason
+    assert len(agent.calls) == 1  # builder never spawned

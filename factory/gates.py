@@ -49,11 +49,13 @@ def _git(*args: str, repo_dir: Path) -> subprocess.CompletedProcess:
 def changed_files(repo_dir: Path) -> list[str]:
     """Working-tree changes vs HEAD: modified, staged, untracked, and rename sides.
 
-    Parsed from ``--porcelain -z``: NUL-delimited raw paths, so no quoting or
-    escaping surprises. A staged rename lists BOTH sides — the new path and the
-    original it replaced — so the rollback can undo a rename it didn't sanction.
+    Parsed from ``--porcelain -z --untracked-files=all``: NUL-delimited raw paths
+    (no quoting or escaping surprises) and untracked files listed individually —
+    never collapsed into directory entries, so claims and rollback always target
+    exact files. A staged rename lists BOTH sides — the new path and the original
+    it replaced — so the rollback can undo a rename it didn't sanction.
     """
-    out = _git("status", "--porcelain", "-z", repo_dir=repo_dir).stdout
+    out = _git("status", "--porcelain", "-z", "--untracked-files=all", repo_dir=repo_dir).stdout
     entries = [e for e in out.split("\0") if e]
     paths: list[str] = []
     i = 0

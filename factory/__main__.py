@@ -143,7 +143,7 @@ def cmd_plan_build_test(args) -> int:
             repo_dir=repo_dir,
             max_rounds=args.max_rounds,
         )
-    except AgentPhaseError as exc:
+    except (AgentPhaseError, RuntimeError) as exc:
         print(f"plan-build-test FAILED: {exc}", file=sys.stderr)
         return 1
     if not accepted and reason:
