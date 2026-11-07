@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     status     TEXT NOT NULL DEFAULT 'running',   -- running | accepted | failed
     agent      TEXT,
     model      TEXT,
+    repo       TEXT NOT NULL DEFAULT '',          -- target repo the run touched ('' = legacy rows from before --repo)
     started_at TEXT NOT NULL,
     ended_at   TEXT
 );
@@ -59,7 +60,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
     """Open (creating if needed) the trace db with WAL and the schema applied.
 
     ``check_same_thread=False`` is required: the streaming tracer inserts events
-    from the pump thread while the main thread owns the connection.
+    from the pump thread while the main thread owns the connection. Existing dbs
+    get the ``repo`` column via ALTER — one trace now serves several target
+    repos, so every run must say which repo it touched.
     """
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,5 +71,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
-    conn.commit()
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+    if "repo" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN repo TEXT NOT NULL DEFAULT ''")
+        conn.commit()
     return conn

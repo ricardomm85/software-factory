@@ -155,13 +155,15 @@ def _build_test_rounds(
     agent_fn,
     test_fn,
     exempt_paths: set[str] | None = None,
+    env_dir: Path | None = None,
 ) -> tuple[bool, str, BuildOutput | None]:
     """Bounded build→test rounds. Returns (accepted, reason, final envelope).
 
     The caller owns the run lifecycle (create and finish) — this helper never
     settles the run, so a crash propagates and the wrapper decides.
     ``exempt_paths`` (factory infrastructure like the trace db) never counts as
-    agent debris and is never rolled back.
+    agent debris and is never rolled back. ``env_dir`` is the roster's home for
+    secrets when the target ``repo_dir`` is elsewhere (``--repo``).
     """
     builder_prompt = prompt
     accepted = False
@@ -181,6 +183,7 @@ def _build_test_rounds(
                 output_type=BuildOutput,
                 agent_fn=agent_fn,
                 repo_dir=repo_dir,
+                env_dir=env_dir,
             )
             final_envelope = envelope
             if envelope.status != "success":
@@ -238,17 +241,21 @@ def run_build_test(
     agent_fn=run_pi_streaming,
     test_fn=run_test_command,
     exempt_paths: set[str] | None = None,
+    env_dir: Path | None = None,
 ) -> bool:
     """Builder + code(test) with bounded rounds. Returns whether the run was accepted.
 
     The run settles its own trace on any failure — no orphaned 'running' rows.
     ``exempt_paths`` never counts as agent debris and is never rolled back.
     """
-    run = Run.create(conn, request=f"build-test: {prompt}", agent=agent_cfg["name"], model=agent_cfg["model"])
+    run = Run.create(
+        conn, request=f"build-test: {prompt}", agent=agent_cfg["name"], model=agent_cfg["model"],
+        repo=str(repo_dir),
+    )
     try:
         accepted, reason, _ = _build_test_rounds(
             run, prompt, agent_cfg, test_command, repo_dir, max_rounds, agent_fn, test_fn,
-            exempt_paths=exempt_paths,
+            exempt_paths=exempt_paths, env_dir=env_dir,
         )
     except BaseException as exc:
         run.finish(accepted=False, reason=f"{type(exc).__name__}: {exc}")
@@ -269,6 +276,7 @@ def run_plan_build_test(
     test_fn=run_test_command,
     checkpoint_fn=None,
     exempt_paths: set[str] | None = None,
+    env_dir: Path | None = None,
 ) -> tuple[bool, str]:
     """The standard chain: plan → plan gates → handoff → commit:plan → build/test rounds
     → checkpoint → commit.
@@ -283,7 +291,8 @@ def run_plan_build_test(
     Returns (accepted, reason).
     """
     run = Run.create(
-        conn, request=f"plan-build-test: {request}", agent=planner_cfg["name"], model=planner_cfg["model"]
+        conn, request=f"plan-build-test: {request}", agent=planner_cfg["name"], model=planner_cfg["model"],
+        repo=str(repo_dir),
     )
     accepted = False
     reason = ""
@@ -294,7 +303,8 @@ def run_plan_build_test(
         planner_prompt = instruction.replace("{{run_id}}", run.id).replace("{{request}}", request)
         with run.phase("plan", kind="agent", owner=planner_cfg["name"]) as phase:
             plan_envelope = call_agent(
-                run, phase, planner_prompt, planner_cfg, output_type=PlanOutput, agent_fn=agent_fn, repo_dir=repo_dir
+                run, phase, planner_prompt, planner_cfg, output_type=PlanOutput,
+                agent_fn=agent_fn, repo_dir=repo_dir, env_dir=env_dir,
             )
         if plan_envelope.status != "success":
             # The planner decided the request is not actionable — do not nag it.
@@ -361,7 +371,7 @@ def run_plan_build_test(
         )
         accepted, reason, build_envelope = _build_test_rounds(
             run, builder_prompt, builder_cfg, test_command, repo_dir, max_rounds, agent_fn, test_fn,
-            exempt_paths=exempt_paths,
+            exempt_paths=exempt_paths, env_dir=env_dir,
         )
 
         if accepted:
@@ -440,6 +450,7 @@ def run_build_review(
     agent_fn=run_pi_streaming,
     timeout_s: int = 600,
     exempt_paths: set[str] | None = None,
+    env_dir: Path | None = None,
 ) -> tuple[bool, str]:
     """Multi-lens review of the working-tree changes: reviewers → scorer → gate (>=50
     blocks) → bounded fix rounds with the fixer, re-reviewed each round.
@@ -447,9 +458,13 @@ def run_build_review(
     The user's own WIP (dirty at chain start) is exempt from the fixer's rollback —
     reviewers see it, but only verified findings get fixed, and only by the fixer's
     claimed changes. ``exempt_paths`` (the trace db) is invisible to reviewers and
-    survives the fixer's rollback. Returns (accepted, reason).
+    survives the fixer's rollback. ``env_dir`` is the roster's home for secrets.
+    Returns (accepted, reason).
     """
-    run = Run.create(conn, request="build-review: working-tree changes", agent=reviewer_cfgs[0]["name"], model=reviewer_cfgs[0]["model"])
+    run = Run.create(
+        conn, request="build-review: working-tree changes", agent=reviewer_cfgs[0]["name"],
+        model=reviewer_cfgs[0]["model"], repo=str(repo_dir),
+    )
     baseline = set(changed_files(repo_dir))  # the user's WIP — exempt from rollback
     fixer_allow = baseline | (exempt_paths or set())
     accepted = False
@@ -467,7 +482,7 @@ def run_build_review(
                     env = call_agent(
                         run, phase, _review_prompt(rcfg["name"], diff), rcfg,
                         output_type=FindingsOutput, agent_fn=agent_fn, repo_dir=repo_dir,
-                        timeout_s=timeout_s,
+                        timeout_s=timeout_s, env_dir=env_dir,
                     )
                     phase.log("findings", {"count": len(env.findings)})
                     findings.extend(f.model_dump() for f in env.findings)
@@ -481,7 +496,7 @@ def run_build_review(
                 scored = call_agent(
                     run, phase, score_prompt, scorer_cfg,
                     output_type=ScoredOutput, agent_fn=agent_fn, repo_dir=repo_dir,
-                    timeout_s=timeout_s,
+                    timeout_s=timeout_s, env_dir=env_dir,
                 )
                 phase.log("scored", {"count": len(scored.findings)})
 
@@ -513,7 +528,7 @@ def run_build_review(
                     fix_envelope = call_agent(
                         run, phase, fix_prompt, fixer_cfg,
                         output_type=BuildOutput, agent_fn=agent_fn, repo_dir=repo_dir,
-                        timeout_s=timeout_s,
+                        timeout_s=timeout_s, env_dir=env_dir,
                     )
                     reports = gate_reports(fix_envelope, repo_dir, allow=fixer_allow)
                     phase.log("gate_results", {r.gate: r.to_payload() for r in reports})

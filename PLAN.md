@@ -253,9 +253,9 @@ back clean — run `c7ec442f`, phases `review:*:r1 → score → gate → fix �
 → gate`. Also surfaced and fixed two transport bugs en vivo (per-invocation timeout is now
 configurable; the first attempt timed out at 300s). 68 unit tests passing.
 **v1 core is complete:** the factory now plans, builds, tests, reviews, and fixes itself.
-Natural next steps, in no fixed order: `context_handoff/` as first-class handoff storage,
-parallel reviewer execution (Phase 6's fleet), and the roster-vs-target-repo coupling
-decision noted in the Phase 2 review.
+Natural next steps, in no fixed order: `context_handoff/` as first-class handoff storage
+and parallel reviewer execution (Phase 6's fleet). The roster-vs-target-repo coupling
+decision is resolved — see the closure note below.
 
 ### Phase 5 closure note — observability UI (added 2026-11-07)
 
@@ -290,7 +290,34 @@ No TTY attached refuses too: a checkpoint that silently approves itself would be
 Request and decision are both in the trace. 93 tests passing (5 checkpoint + 1 boundary + 4
 exemption-helper).
 
-The live smoke then surfaced a real factory bug: in a target repo without a
+### Closure note — roster/target decoupling (added 2026-11-07)
+
+`factory --repo <path>` resolves the roster-vs-target-repo coupling decision noted in the
+Phase 2 review: one roster, one `.env`, one trace — any number of target repositories.
+`repo_dir` (where agents work) and `env_dir` (where secrets and the roster live) are now
+separate all the way down: `run_pi`/`run_pi_streaming` split cwd from `.env` loading,
+`call_agent` forwards `env_dir`, the chains accept it, and the CLI resolves both from
+`--repo` (top-level or per-subcommand). The trace gains a `sessions.repo` column
+(ALTER-migrated on open; pre-coupling runs read ''), shown in the UI. With the trace at
+home, `_trace_exemptions()` against the target is empty by construction — the target's
+`git clean` cannot touch the trace. 101 tests passing (8 new: migration, repo column,
+cwd/secrets split, env_dir default, env_dir forwarding, exemption emptiness, `prompt
+--repo`, legacy-UI render). Live smoke:
+`plan-build-test --repo /tmp/cp-demo` against a repo holding only `.git` + `README.md` —
+the plan commit landed there, run `b47b6d3c` was recorded at home with
+`repo: /tmp/cp-demo`, the checkpoint refusal stayed intact, and nothing (roster, secrets,
+trace) leaked into the target.
+
+Milestone: the pre-PR dogfood `build-review` contributed code to this change, not just
+verdicts. Its fixer caught two real gaps in the working tree — `cmd_prompt` not honoring
+`--repo`, and the query-only UI crashing with `IndexError` on pre-`repo` legacy traces —
+and landed both fixes with their own tests (the round-2 gate then blocked only on this
+note's stale test count, which the human corrected). "The factory reviews and fixes
+itself" now includes fixing the human's work.
+
+The live smoke then surfaced a real factory bug [historical: written while the trace still
+lived inside the target repo — after the decoupling note below, the trace stays at home and
+this scenario cannot recur]: in a target repo without a
 `.gitignore`, the writes boundary's rollback (`git clean`) treated `data/factory.db`
 as agent debris and deleted the trace mid-run — the open connection kept writing to an
 unlinked inode and the trace was lost silently (it had survived until now only because

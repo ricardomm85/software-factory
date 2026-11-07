@@ -65,16 +65,19 @@ def run_pi(
     thinking: str | None = None,
     timeout_s: int = 300,
     repo_dir: Path | None = None,
+    env_dir: Path | None = None,
 ) -> AgentResult:
     """Run one pi invocation with factory secrets injected. Never raises on agent failure.
 
-    Secrets come from the repo-local ``.env`` (repo_dir); there is no global fallback.
+    ``repo_dir`` is where pi works; secrets come from ``env_dir``'s ``.env``
+    (the roster's home), falling back to ``repo_dir`` when ``env_dir`` is not
+    given. No global fallback either way.
     """
     cmd = build_pi_command(prompt, model=model, session_id=session_id, mode=mode, thinking=thinking)
     if repo_dir is None:
         repo_dir = Path.cwd()
     env = os.environ.copy()
-    env.update(load_env(repo_dir))
+    env.update(load_env(env_dir if env_dir is not None else repo_dir))
     started = time.monotonic()
     try:
         proc = subprocess.run(
@@ -147,20 +150,23 @@ def run_pi_streaming(
     thinking: str | None = None,
     timeout_s: int = 300,
     repo_dir: Path | None = None,
+    env_dir: Path | None = None,
     on_event=None,
 ) -> AgentResult:
     """Run pi in JSONL mode, forwarding each event to ``on_event`` as it lands.
 
     This is the live-trace feed: events reach the SQLite tracer while the agent
     is still working, not batched at the end. The returned ``stdout`` is the
-    final assistant text extracted from the event stream.
+    final assistant text extracted from the event stream. ``repo_dir`` is where
+    pi works; secrets come from ``env_dir`` (the roster's home), falling back to
+    ``repo_dir``.
     """
     cmd = build_pi_command(prompt, model=model, session_id=session_id, mode="json", thinking=thinking)
 
     if repo_dir is None:
         repo_dir = Path.cwd()
     env = os.environ.copy()
-    env.update(load_env(repo_dir))
+    env.update(load_env(env_dir if env_dir is not None else repo_dir))
     started = time.monotonic()
     proc = subprocess.Popen(
         cmd,

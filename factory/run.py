@@ -53,12 +53,12 @@ class Run:
         self.id = run_id
 
     @classmethod
-    def create(cls, conn, request: str, agent: str, model: str) -> "Run":
+    def create(cls, conn, request: str, agent: str, model: str, repo: str = "") -> "Run":
         run_id = new_run_id()
         conn.execute(
-            "INSERT INTO sessions (id, request, status, agent, model, started_at)"
-            " VALUES (?, ?, 'running', ?, ?, ?)",
-            (run_id, request, agent, model, _now()),
+            "INSERT INTO sessions (id, request, status, agent, model, repo, started_at)"
+            " VALUES (?, ?, 'running', ?, ?, ?, ?)",
+            (run_id, request, agent, model, repo, _now()),
         )
         conn.commit()
         return cls(conn, run_id)
@@ -134,6 +134,7 @@ def call_agent(
     agent_fn=run_pi_streaming,
     repo_dir: Path | None = None,
     timeout_s: int = 300,
+    env_dir: Path | None = None,
 ) -> BaseModel:
     """Run one agent phase: prompt in, typed envelope out, same-session retries.
 
@@ -141,7 +142,9 @@ def call_agent(
     the same run resume its context window instead of starting cold. Invalid
     envelopes are corrected in-session; a timed-out or crashed agent fails the
     phase immediately with its stderr surfaced — retrying a deterministic
-    failure only burns the timeout again.
+    failure only burns the timeout again. ``env_dir`` is where secrets (.env)
+    live — the roster's home, which may differ from ``repo_dir`` when the
+    factory targets another repo (``--repo``).
     """
     session_id = f"{run.id}-{agent_cfg['name']}"
     full_prompt = f"{prompt}\n\n{report_contract(output_type)}"
@@ -164,6 +167,7 @@ def call_agent(
             on_event=lambda evt: phase.log("pi_event", evt),
             repo_dir=repo_dir,
             timeout_s=timeout_s,
+            env_dir=env_dir,
         )
         last_text = result.stdout
 
