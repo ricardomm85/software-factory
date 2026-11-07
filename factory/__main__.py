@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from .agent_pi import run_pi
-from .chains import run_build_review, run_build_test, run_plan_build_test
+from .chains import run_build_review, run_build_test, run_plan_build_test, _stdin_checkpoint
 from .config import ConfigError, load_config, resolve_agent
 from .db import connect
 from .envelope import RunOutput
@@ -36,6 +36,25 @@ def _resolve_agent(cfg: dict, name: str | None) -> dict:
 def _db_path(cfg: dict, config_path: Path) -> Path:
     data_dir = cfg["defaults"].get("data_dir", "data")
     return config_path.parent / data_dir / "factory.db"
+
+
+def _trace_exemptions(repo_dir: Path, db_path: Path) -> set[str]:
+    """Trace db + WAL sidecars as repo-relative posix paths.
+
+    The writes boundary (gate rollbacks, ``git add -A``, reviewer diffs) must
+    never treat the factory's own trace as agent debris: a ``git clean`` here
+    deletes the trace mid-run and the open connection keeps writing to an
+    unlinked inode — the trace is lost silently (surfaced live in Phase 5).
+    """
+    try:
+        rel = db_path.resolve().relative_to(repo_dir.resolve())
+    except ValueError:
+        return set()
+    return {
+        rel.as_posix(),
+        (rel.parent / f"{rel.name}-wal").as_posix(),
+        (rel.parent / f"{rel.name}-shm").as_posix(),
+    }
 
 
 def cmd_run(args) -> int:
@@ -101,6 +120,7 @@ def cmd_build_test(args) -> int:
             test_command=test_command,
             repo_dir=repo_dir,
             max_rounds=args.max_rounds,
+            exempt_paths=_trace_exemptions(repo_dir, _db_path(cfg, args.config)),
         )
     except AgentPhaseError as exc:
         print(f"build-test FAILED: {exc}", file=sys.stderr)
@@ -121,6 +141,8 @@ def cmd_plan_build_test(args) -> int:
             file=sys.stderr,
         )
         return 2
+    ask = args.checkpoint if args.checkpoint is not None else bool(cfg["defaults"].get("checkpoint", False))
+    checkpoint_fn = _stdin_checkpoint if ask else None
     rc = _require_clean_tree(repo_dir)
     if rc:
         return rc
@@ -135,6 +157,8 @@ def cmd_plan_build_test(args) -> int:
             test_command=test_command,
             repo_dir=repo_dir,
             max_rounds=args.max_rounds,
+            checkpoint_fn=checkpoint_fn,
+            exempt_paths=_trace_exemptions(repo_dir, _db_path(cfg, args.config)),
         )
     except (AgentPhaseError, RuntimeError) as exc:
         print(f"plan-build-test FAILED: {exc}", file=sys.stderr)
@@ -177,6 +201,7 @@ def cmd_build_review(args) -> int:
             fixer_cfg=fixer,
             max_rounds=args.max_rounds,
             timeout_s=args.timeout,
+            exempt_paths=_trace_exemptions(repo_dir, _db_path(cfg, args.config)),
         )
     except (AgentPhaseError, OSError) as exc:
         # OSError covers a lens whose prompt template file is missing, and
@@ -293,6 +318,12 @@ def main(argv: list[str] | None = None) -> int:
     p_pbt.add_argument("--builder", default="builder", help="Builder agent from the roster")
     p_pbt.add_argument("--test-command", default=None, help="Override the roster's test_command")
     p_pbt.add_argument("--max-rounds", type=int, default=3, help="Bounded fix rounds")
+    p_pbt.add_argument(
+        "--checkpoint",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Ask before the final commit lands (default: defaults.checkpoint in the roster)",
+    )
     p_pbt.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_pbt.set_defaults(func=cmd_plan_build_test)
 

@@ -1,10 +1,14 @@
-"""Tests for the standard chain: plan → handoff → commit:plan → build/test → commit."""
+"""Tests for the standard chain: plan → handoff → commit:plan → build/test → commit,
+plus the Phase 5 human checkpoint before the final commit."""
 
 import subprocess
+import sys
 from pathlib import Path
 
+import pytest
+
 from factory.agent_pi import AgentResult
-from factory.chains import run_plan_build_test
+from factory.chains import CheckpointDeclined, _stdin_checkpoint, run_plan_build_test
 from factory.db import connect
 
 PLANNER_CFG = {"name": "planner", "model": "zai/glm-5.3-flash", "thinking": "high"}
@@ -172,3 +176,114 @@ def test_missing_plan_file_fails_at_plan_gates_without_builder(repo, tmp_path):
     assert not accepted
     assert "planner gates failed" in reason
     assert len(agent.calls) == 1  # builder never spawned
+
+
+# --- Phase 5: the human checkpoint before the final commit --------------------
+
+
+def test_checkpoint_approval_lets_the_commit_land(repo, tmp_path):
+    agent = StubAgent([PLAN_JSON, BUILD_JSON], side_effects=[write_plan, write_feature])
+    tests = StubTests([0])
+    seen = []
+
+    def approve(pending):
+        seen.append(pending)
+        return True
+
+    conn = connect(tmp_path / "factory.db")
+    accepted, reason = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=agent, test_fn=tests, checkpoint_fn=approve,
+    )
+    assert accepted, reason
+    assert len(seen) == 1 and "feature.txt" in seen[0]   # the human saw the pending changes
+    phases = [r["name"] for r in conn.execute("SELECT name FROM phases ORDER BY seq").fetchall()]
+    assert phases == ["plan", "plan_gates", "handoff", "commit:plan", "build:r1", "test:r1", "checkpoint", "commit"]
+    cp = conn.execute("SELECT status FROM phases WHERE name = 'checkpoint'").fetchone()[0]
+    assert cp == "pass"
+
+
+def test_checkpoint_decline_rejects_run_and_leaves_tree_dirty(repo, tmp_path):
+    agent = StubAgent([PLAN_JSON, BUILD_JSON], side_effects=[write_plan, write_feature])
+    tests = StubTests([0])
+    conn = connect(tmp_path / "factory.db")
+    with pytest.raises(CheckpointDeclined):
+        run_plan_build_test(
+            conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+            repo_dir=repo, agent_fn=agent, test_fn=tests, checkpoint_fn=lambda pending: False,
+        )
+    # The human owns the changes now: nothing was committed, the run is not accepted.
+    assert (repo / "feature.txt").exists()
+    assert "feat: add feature.txt per plan" not in _commits(repo)
+    assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
+    phase = conn.execute(
+        "SELECT status, error FROM phases WHERE name = 'checkpoint'"
+    ).fetchone()
+    assert phase[0] == "fail" and "declined" in phase[1]
+
+
+def test_no_checkpoint_fn_means_no_checkpoint_phase(repo, tmp_path):
+    agent = StubAgent([PLAN_JSON, BUILD_JSON], side_effects=[write_plan, write_feature])
+    tests = StubTests([0])
+    conn = connect(tmp_path / "factory.db")
+    accepted, _ = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=agent, test_fn=tests,
+    )
+    assert accepted
+    names = [r["name"] for r in conn.execute("SELECT name FROM phases ORDER BY seq").fetchall()]
+    assert "checkpoint" not in names   # opt-in: the default chain stays as it was
+
+
+def test_stdin_checkpoint_refuses_without_a_tty(monkeypatch):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    with pytest.raises(CheckpointDeclined, match="no human to ask"):
+        _stdin_checkpoint("pending changes: whatever")
+
+
+def test_stdin_checkpoint_reads_y_or_n(monkeypatch):
+    import builtins
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "y")
+    assert _stdin_checkpoint("pending changes") is True
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "nope")
+    assert _stdin_checkpoint("pending changes") is False
+
+
+# --- the trace survives the writes boundary (surfaced by a live Phase 5 smoke) ---
+
+
+def test_trace_db_survives_gates_and_stays_out_of_commits(repo, tmp_path):
+    """In a target repo without a .gitignore, data/factory.db is untracked — the
+    plan/build gates' rollback and the commits' ``git add -A`` used to destroy it
+    or land it in the user's history. It must survive both, intact and readable."""
+    db_path = repo / "data" / "factory.db"           # the trace lives INSIDE the target repo
+    conn = connect(db_path)
+    exempt = {"data/factory.db", "data/factory.db-wal", "data/factory.db-shm"}
+
+    def approve(pending):
+        return True
+
+    accepted, reason = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=StubAgent([PLAN_JSON, BUILD_JSON], side_effects=[write_plan, write_feature]),
+        test_fn=StubTests([0]), checkpoint_fn=approve, exempt_paths=exempt,
+    )
+    assert accepted, reason
+
+    # A FRESH connection sees the full trace — the file was never unlinked.
+    fresh = connect(db_path)
+    phases = [r["name"] for r in fresh.execute("SELECT name FROM phases ORDER BY seq").fetchall()]
+    assert phases == ["plan", "plan_gates", "handoff", "commit:plan", "build:r1", "test:r1", "checkpoint", "commit"]
+    assert fresh.execute("SELECT COUNT(*) FROM events").fetchone()[0] > 0
+
+    # Neither commit carries trace plumbing.
+    for sha in subprocess.run(
+        ["git", "log", "--format=%H", "-2"], cwd=str(repo), capture_output=True, text=True, check=True
+    ).stdout.split():
+        names = subprocess.run(
+            ["git", "show", "--name-only", "--format=", sha], cwd=str(repo),
+            capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        assert all(not n.startswith("data/") for n in names), names

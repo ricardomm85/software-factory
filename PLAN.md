@@ -253,10 +253,9 @@ back clean — run `c7ec442f`, phases `review:*:r1 → score → gate → fix �
 → gate`. Also surfaced and fixed two transport bugs en vivo (per-invocation timeout is now
 configurable; the first attempt timed out at 300s). 68 unit tests passing.
 **v1 core is complete:** the factory now plans, builds, tests, reviews, and fixes itself.
-Natural next steps, in no fixed order: human checkpoints pre-commit (the deferred half of
-Phase 5), `context_handoff/` as first-class handoff storage, parallel reviewer execution
-(Phase 6's fleet), and the roster-vs-target-repo coupling decision noted in the Phase 2
-review.
+Natural next steps, in no fixed order: `context_handoff/` as first-class handoff storage,
+parallel reviewer execution (Phase 6's fleet), and the roster-vs-target-repo coupling
+decision noted in the Phase 2 review.
 
 ### Phase 5 closure note — observability UI (added 2026-11-07)
 
@@ -278,6 +277,27 @@ the real trace: index and run pages render Phases 1–4 history correctly
 Dogfood: the factory reviewed its own UI diff with `factory build-review` —
 "no findings scored >=50". The deferred half of Phase 5 (human checkpoints pre-commit)
 stays on the §9 list.
+
+### Phase 5b closure note — human checkpoints + a live-surfaced trace bug (added 2026-11-07)
+
+`factory plan-build-test --checkpoint` (or `defaults.checkpoint: true` in the roster;
+`--no-checkpoint` overrides): before the final commit lands, a `checkpoint` phase
+(owner `human`) shows the pending changes (status + diffstat) and asks
+`commit these changes? [y/N]` at stdin. Declining raises `CheckpointDeclined` — the run
+settles rejected and the working tree is left uncommitted for the human to dispose of.
+No TTY attached refuses too: a checkpoint that silently approves itself would be theater.
+Request and decision are both in the trace. 89 tests passing (5 checkpoint + 1 boundary).
+
+The live smoke then surfaced a real factory bug: in a target repo without a
+`.gitignore`, the writes boundary's rollback (`git clean`) treated `data/factory.db`
+as agent debris and deleted the trace mid-run — the open connection kept writing to an
+unlinked inode and the trace was lost silently (it had survived until now only because
+`data/` is gitignored in this repo). Fix: `_trace_exemptions()` exempts the trace db
+plus its WAL sidecars from every gate rollback, from both commits (`git reset -q` after
+`add -A`), and from the reviewer diff collector. Regression test: the whole chain runs
+in an ignore-free repo and a fresh connection reads the full trace while no commit
+carries `data/`. Verified live: the no-TTY smoke leaves run `e0e4a6f4` with all 7 phases
+recorded (844 pi events) and the plan commit carries only `specs/<run>-plan.md`.
 
 ## References
 
