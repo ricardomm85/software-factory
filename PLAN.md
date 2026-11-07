@@ -315,7 +315,9 @@ and landed both fixes with their own tests (the round-2 gate then blocked only o
 note's stale test count, which the human corrected). "The factory reviews and fixes
 itself" now includes fixing the human's work.
 
-The live smoke then surfaced a real factory bug: in a target repo without a
+The live smoke then surfaced a real factory bug [historical: written while the trace still
+lived inside the target repo — after the decoupling note below, the trace stays at home and
+this scenario cannot recur]: in a target repo without a
 `.gitignore`, the writes boundary's rollback (`git clean`) treated `data/factory.db`
 as agent debris and deleted the trace mid-run — the open connection kept writing to an
 unlinked inode and the trace was lost silently (it had survived until now only because

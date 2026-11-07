@@ -123,3 +123,27 @@ def test_trace_at_home_is_not_exempt_in_the_target_repo(tmp_path):
     target = tmp_path / "target"
     target.mkdir()
     assert _trace_exemptions(target, home / "data" / "factory.db") == set()
+
+
+def test_home_runs_record_a_resolved_path(tmp_path):
+    # "." (the default --config dir) must not leak into the trace as the repo
+    # value — home runs and --repo runs have to be comparable in one column.
+    import types
+
+    from factory.__main__ import _resolve_repo
+
+    args = types.SimpleNamespace(config=Path("config.yaml"), repo=None)
+    repo_dir, _ = _resolve_repo(args)
+    assert repo_dir == Path("config.yaml").parent.resolve()
+
+
+def test_build_review_refuses_a_non_git_repo(tmp_path, capsys):
+    import factory.__main__ as cli
+
+    plain = tmp_path / "plain"
+    plain.mkdir()  # no .git anywhere
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("defaults:\n  coding_agent: pi\n  model: zai/m\nagents:\n  - name: a\n    purpose: p\n")
+    rc = cli.main(["build-review", "--repo", str(plain), "--config", str(cfg)])
+    assert rc == 2
+    assert "not a git repository" in capsys.readouterr().err

@@ -70,8 +70,8 @@ def run_pi(
     """Run one pi invocation with factory secrets injected. Never raises on agent failure.
 
     ``repo_dir`` is where pi works; secrets come from ``env_dir``'s ``.env``
-    (the roster's home), falling back to ``repo_dir`` when they are the same
-    place. No global fallback either way.
+    (the roster's home), falling back to ``repo_dir`` when ``env_dir`` is not
+    given. No global fallback either way.
     """
     cmd = build_pi_command(prompt, model=model, session_id=session_id, mode=mode, thinking=thinking)
     if repo_dir is None:

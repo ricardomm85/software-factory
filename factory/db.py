@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     status     TEXT NOT NULL DEFAULT 'running',   -- running | accepted | failed
     agent      TEXT,
     model      TEXT,
-    repo       TEXT NOT NULL DEFAULT '',          -- target repo the run touched ('' = the factory's own)
+    repo       TEXT NOT NULL DEFAULT '',          -- target repo the run touched ('' = legacy rows from before --repo)
     started_at TEXT NOT NULL,
     ended_at   TEXT
 );
@@ -71,9 +71,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
-    try:
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+    if "repo" not in columns:
         conn.execute("ALTER TABLE sessions ADD COLUMN repo TEXT NOT NULL DEFAULT ''")
         conn.commit()
-    except sqlite3.OperationalError:
-        pass  # fresh dbs already have the column from the schema
     return conn

@@ -46,7 +46,9 @@ def _resolve_repo(args) -> tuple[Path, Path]:
     """
     config_dir = args.config.parent
     repo_arg = getattr(args, "repo", None)
-    repo_dir = Path(repo_arg).resolve() if repo_arg else config_dir
+    # Always resolved: home runs and --repo runs must record comparable values
+    # in the trace's repo column, never "." vs absolute paths.
+    repo_dir = (Path(repo_arg) if repo_arg else config_dir).resolve()
     return repo_dir, config_dir
 
 
@@ -199,9 +201,23 @@ def _require_clean_tree(repo_dir: Path) -> int:
     return 0
 
 
+def _require_git_repo(repo_dir: Path) -> int:
+    """The chains read the repo through git — refuse a directory that is not one."""
+    res = subprocess.run(
+        ["git", "rev-parse", "--git-dir"], cwd=str(repo_dir), capture_output=True, text=True
+    )
+    if res.returncode != 0:
+        print(f"not a git repository: {repo_dir}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_build_review(args) -> int:
     cfg = _load_config(args.config)
     repo_dir, config_dir = _resolve_repo(args)
+    rc = _require_git_repo(repo_dir)
+    if rc:
+        return rc
     lens_names = [name.strip() for name in args.lenses.split(",") if name.strip()]
     reviewers = [_resolve_agent(cfg, name) for name in lens_names]
     scorer = _resolve_agent(cfg, args.scorer)
