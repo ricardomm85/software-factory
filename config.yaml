@@ -1,0 +1,18 @@
+# Factory roster: one entry per agent — who it is, not how it is used.
+# Call sites (chain scripts) name agents; they never name a model.
+defaults:
+  coding_agent: pi                 # v1 runs pi only
+  model: zai/glm-5.3-flash         # provider/model-id, always
+  thinking: medium                 # off|minimal|low|medium|high|xhigh|max — quote 'off' (YAML parses bare off/on as booleans)
+  data_dir: data                   # runtime trace + sessions (gitignored)
+
+agents:
+  - name: scout
+    purpose: Read-only recon; answer questions about the repo without changing anything.
+
+  - name: planner
+    thinking: high                 # same model for every agent for now; effort is what differs
+    purpose: Turn a request into a plan the builder can implement without asking questions.
+
+  - name: builder
+    purpose: Implement the plan; propose a commit message; leave only what the plan allows.

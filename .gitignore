@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Runtime data (trace DB, sessions) — never commit
+data/
+
+# Secrets — repo-local .env only (gitignored; see .env.sample). No global location.
+.env
+
+# Tooling noise
+.pytest_cache/
