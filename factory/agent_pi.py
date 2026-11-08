@@ -7,6 +7,8 @@ appears in config files or on the command line.
 
 import json
 import os
+import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -15,6 +17,43 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .env import load_env
+
+# pi needs Node >= 22.1 (enableCompileCache). An older node makes every agent
+# die in about one second with a SyntaxError — loud here, silent on the board.
+MIN_NODE = (22, 1)
+
+
+def preflight_agent_runtime() -> tuple[bool, str]:
+    """Verify pi and a new-enough node resolve from the current PATH.
+
+    Called by ``factory serve`` right after ``apply_runtime_env`` so a daemon
+    that cannot run its agents refuses to start with a fix-it message, instead
+    of accepting tasks that all fail. Returns (ok, human message).
+    """
+    pi = shutil.which("pi")
+    if pi is None:
+        return False, (
+            "preflight failed: 'pi' not found on PATH — install it or pin defaults.path_prepend "
+            "in config.yaml to the directory that has it"
+        )
+    node = shutil.which("node")
+    if node is None:
+        return False, (
+            "preflight failed: 'node' not found on PATH — pi runs on node; "
+            "pin defaults.path_prepend in config.yaml to the node bin directory"
+        )
+    res = subprocess.run([node, "--version"], capture_output=True, text=True, check=False)
+    match = re.match(r"v(\d+)\.(\d+)", res.stdout.strip())
+    if res.returncode != 0 or match is None:
+        return False, f"preflight failed: 'node --version' at {node} did not answer v<major>.<minor>"
+    major, minor = int(match.group(1)), int(match.group(2))
+    if (major, minor) < MIN_NODE:
+        return False, (
+            f"preflight failed: node {major}.{minor} at {node} is too old for pi "
+            f"(needs >= {MIN_NODE[0]}.{MIN_NODE[1]}); pin defaults.path_prepend in config.yaml "
+            "to the node >= 22 bin directory"
+        )
+    return True, f"preflight ok: pi at {pi} · node {major}.{minor} at {node}"
 
 
 @dataclass

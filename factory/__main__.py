@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .agent_pi import run_pi
+from .agent_pi import preflight_agent_runtime, run_pi
 from .chains import (
     DEFAULT_REVIEW_LENSES,
     _stdin_checkpoint,
@@ -24,7 +24,7 @@ from .chains import (
     run_build_test,
     run_plan_build_test,
 )
-from .config import ConfigError, load_config, resolve_agent
+from .config import ConfigError, apply_runtime_env, load_config, resolve_agent
 from .db import connect, trace_exemptions as _trace_exemptions
 from .envelope import RunOutput
 from .run import AgentPhaseError, Run, call_agent
@@ -33,7 +33,12 @@ from .web.runs import fmt_duration, make_trace_server
 
 def _load_config(path: Path) -> dict:
     # ConfigError propagates; main() maps it to a clean exit code.
-    return load_config(path)
+    cfg = load_config(path)
+    # The entrypoint owns its runtime: PATH comes from config, not from the
+    # shell that happened to launch the daemon (a mise-first shell resolves an
+    # old node and every agent dies in one second).
+    apply_runtime_env(cfg)
+    return cfg
 
 
 def _resolve_agent(cfg: dict, name: str | None) -> dict:
@@ -280,6 +285,12 @@ def cmd_ui(args) -> int:
 def cmd_serve(args) -> int:
     """The board: a long-lived daemon that owns execution (Phases 6-8)."""
     cfg = _load_config(args.config)
+    ok, message = preflight_agent_runtime()
+    if not ok:
+        # Refuse to accept work the daemon cannot run: every task would fail in
+        # one second and the board would only show the corpse.
+        print(message, file=sys.stderr)
+        return 2
     db_path = _db_path(cfg, args.config)
     config_dir = args.config.parent
     if not 0 < args.port <= 65535:
@@ -299,6 +310,7 @@ def cmd_serve(args) -> int:
     repos = ", ".join(r["name"] for r in board.repos) or "(no repos configured — add a repos: section)"
     print(
         f"factory board → http://127.0.0.1:{args.port}/  (db: {db_path})\n"
+        f"  {message}\n"
         f"  repos: {repos}\n"
         f"  max concurrent runs: {board._cap} — Ctrl+C to stop"
     )
