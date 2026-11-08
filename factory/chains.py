@@ -8,6 +8,10 @@ proposed message. The agent never runs git itself.
 Phase 5: ``run_plan_build_test(checkpoint_fn=...)`` — an optional human
 checkpoint before the final commit: the pending changes are shown, and only
 an explicit approval lands them. No human attached means the checkpoint fails.
+Inline review: with ``review=True`` the same review→score→gate→fix loop as
+``run_build_review`` (shared ``_review_fix_loop``) runs inside
+``run_plan_build_test`` after the last green test round and before the
+checkpoint/commit — one implementation, two call sites.
 """
 
 import shlex
@@ -27,6 +31,9 @@ from .envelope import (
 )
 from .gates import GateReport, artifacts_exist, changed_files, diff_matches_claims, run_output_gate
 from .run import Run, call_agent, json_dumps
+
+# The default review lenses both chain call sites use (CLI --lenses default, board wiring).
+DEFAULT_REVIEW_LENSES = ("review-conventions", "review-bugs")
 
 
 @dataclass
@@ -287,9 +294,14 @@ def run_plan_build_test(
     timeout_s: int = 300,
     exempt_paths: set[str] | None = None,
     env_dir: Path | None = None,
+    review: bool = False,
+    reviewer_cfgs: list[dict] | None = None,
+    scorer_cfg: dict | None = None,
+    review_base: str = "",
+    review_rounds: int = 2,
 ) -> tuple[bool, str]:
     """The standard chain: plan → plan gates → handoff → commit:plan → build/test rounds
-    → checkpoint → commit → deliver.
+    → [review → score → gate → fix rounds] → checkpoint → commit → deliver.
 
     Lands the planner's plan commit and the builder's implementation commit (carrying the
     builder's proposed message) when the planner ships a plan file; degrades to a single
@@ -310,10 +322,21 @@ def run_plan_build_test(
     fires the moment the run exists (the board uses it to bind the card to the run).
     ``launched_by`` stamps who created the run ('' = the CLI, ``'board'`` = the serve
     daemon) — the board's startup reaper settles only its own runs, never the CLI's
-    sharing the same trace db. Agents never run git themselves. ``exempt_paths`` (the trace db and its WAL
+    sharing the same trace db. ``review`` gates an inline code review after the last
+    green test round and before the checkpoint/commit: the same review→score→gate→fix
+    loop ``run_build_review`` uses (:func:`_review_fix_loop`, traced as phases under
+    THIS run), diffing against ``review_base`` ('' → HEAD; the board passes the task
+    branch's ``origin/<default>`` so the landed plan commit is reviewed too).
+    ``reviewer_cfgs``/``scorer_cfg`` are the resolved roster agents (the builder doubles
+    as fixer); findings scored ≥50 after ``review_rounds`` (default 2) bounded fix
+    rounds fail the chain — the pr_approval pause never fires. The caller reads
+    ``defaults.review``: the chain itself is opt-in, exactly like ``checkpoint_fn``.
+    Agents never run git themselves. ``exempt_paths`` (the trace db and its WAL
     sidecars) is factory infrastructure: never agent debris, never rolled back,
     never committed. Returns (accepted, reason).
     """
+    if review and (not reviewer_cfgs or scorer_cfg is None):
+        raise ValueError("review enabled but reviewer/scorer agent configs are missing")
     run = Run.create(
         conn, request=f"plan-build-test: {request}", agent=planner_cfg["name"], model=planner_cfg["model"],
         repo=str(repo_dir), launched_by=launched_by,
@@ -431,6 +454,20 @@ def run_plan_build_test(
             exempt_paths=exempt_paths, env_dir=env_dir, timeout_s=timeout_s,
         )
 
+        if accepted and review:
+            # Code review inline: the same _review_fix_loop run_build_review uses,
+            # traced as phases under THIS run. Findings >=50 after the last fix
+            # round fail the chain; the pr_approval pause stays after review.
+            review_ok, review_reason = _review_fix_loop(
+                run, repo_dir, reviewer_cfgs, scorer_cfg, builder_cfg,
+                review_rounds, agent_fn, timeout_s,
+                exempt_paths=exempt_paths, env_dir=env_dir,
+                diff_base=review_base or "HEAD",
+            )
+            if not review_ok:
+                run.finish(accepted=False, reason=review_reason)
+                return False, review_reason
+
         if accepted:
             message = (build_envelope.commit_message if build_envelope else "").strip()
             if not message:
@@ -538,13 +575,18 @@ def _plan_with_human_gates(
     raise CheckpointDeclined(f"plan not approved after {max_human_rounds} rounds")
 
 
-def _working_tree_diff(repo_dir: Path, max_chars: int = 80000, exempt_paths: set[str] | None = None) -> str:
-    """The full working-tree diff vs HEAD — the material every reviewer reads.
+def _working_tree_diff(
+    repo_dir: Path, max_chars: int = 80000,
+    exempt_paths: set[str] | None = None, base: str = "HEAD",
+) -> str:
+    """The full diff of the working tree against ``base`` — the material every
+    reviewer reads. HEAD for the standalone command; the board passes the task
+    branch's origin default branch so the landed plan commit is reviewed too.
 
     ``exempt_paths`` (factory infrastructure like the trace db) never enters a
     reviewer's context: it is untracked plumbing, not work under review.
     """
-    res = _git("diff", "HEAD", repo_dir=repo_dir)
+    res = _git("diff", base, repo_dir=repo_dir)
     untracked = _git("ls-files", "--others", "--exclude-standard", repo_dir=repo_dir)
     body = res.stdout
     skip = exempt_paths or set()
@@ -570,6 +612,95 @@ def _review_prompt(agent_name: str, diff: str) -> str:
     return template.replace("{{diff}}", diff)
 
 
+def _review_fix_loop(
+    run: Run,
+    repo_dir: Path,
+    reviewer_cfgs: list[dict],
+    scorer_cfg: dict,
+    fixer_cfg: dict,
+    max_rounds: int,
+    agent_fn,
+    timeout_s: int,
+    exempt_paths: set[str] | None = None,
+    env_dir: Path | None = None,
+    diff_base: str = "HEAD",
+) -> tuple[bool, str]:
+    """Reviewers → scorer → gate (>=50 blocks) → bounded fix rounds, re-reviewed
+    each round. Shared by ``run_build_review`` (own run, diff vs HEAD) and the
+    review wiring inside ``run_plan_build_test`` (same run, diff vs the task
+    branch's origin default). Phases trace under ``run``; the caller owns the
+    run's settle. The tree's state at loop start (the user's WIP / the builder's
+    work) is exempt from the fixer's rollback; ``exempt_paths`` is invisible to
+    reviewers and survives every rollback. Returns (accepted, reason).
+    """
+    baseline = set(changed_files(repo_dir))
+    fixer_allow = baseline | (exempt_paths or set())
+    for round_no in range(1, max_rounds + 1):
+        diff = _working_tree_diff(repo_dir, exempt_paths=exempt_paths, base=diff_base)
+        if not diff.strip():
+            return True, "no changes to review"
+
+        findings: list[dict] = []
+        for rcfg in reviewer_cfgs:
+            with run.phase(f"review:{rcfg['name']}:r{round_no}", kind="agent", owner=rcfg["name"]) as phase:
+                env = call_agent(
+                    run, phase, _review_prompt(rcfg["name"], diff), rcfg,
+                    output_type=FindingsOutput, agent_fn=agent_fn, repo_dir=repo_dir,
+                    timeout_s=timeout_s, env_dir=env_dir,
+                )
+                phase.log("findings", {"count": len(env.findings)})
+                findings.extend(f.model_dump() for f in env.findings)
+
+        with run.phase(f"score:r{round_no}", kind="agent", owner=scorer_cfg["name"]) as phase:
+            score_prompt = _correction(
+                "score_findings",
+                findings=json_dumps({"issues": findings}),
+                diff=diff,
+            )
+            scored = call_agent(
+                run, phase, score_prompt, scorer_cfg,
+                output_type=ScoredOutput, agent_fn=agent_fn, repo_dir=repo_dir,
+                timeout_s=timeout_s, env_dir=env_dir,
+            )
+            phase.log("scored", {"count": len(scored.findings)})
+
+        blocked = [f for f in scored.findings if f.score >= 50]
+        with run.phase(f"gate:r{round_no}", kind="code", owner="code") as phase:
+            phase.log(
+                "review_gate",
+                {"total": len(scored.findings), "blocked": len(blocked), "threshold": 50},
+            )
+            gate_ok = not blocked
+
+        if gate_ok:
+            return True, "no findings scored >=50"
+        if round_no == max_rounds:
+            return False, (f"{len(blocked)} findings scored >=50 after final round: " + "; ".join(
+                f"{f.file}:{f.line} {f.description[:80]} (score {f.score})" for f in blocked
+            ))
+
+        findings_json = json_dumps({"issues": [f.model_dump() for f in blocked]})
+        with run.phase(f"fix:r{round_no}", kind="agent", owner=fixer_cfg["name"]) as phase:
+            # The fixer claims everything it touched — including edits to the
+            # user's baseline files; unclaimed changes are rolled back. Gate
+            # violations are corrected in-session (never cold-restart).
+            fix_prompt = _correction("fix_findings", findings=findings_json, diff=diff[:40000])
+            for attempt in range(1, 3):
+                fix_envelope = call_agent(
+                    run, phase, fix_prompt, fixer_cfg,
+                    output_type=BuildOutput, agent_fn=agent_fn, repo_dir=repo_dir,
+                    timeout_s=timeout_s, env_dir=env_dir,
+                )
+                reports = gate_reports(fix_envelope, repo_dir, allow=fixer_allow)
+                phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
+                if all(r.passed for r in reports):
+                    break
+                violations = _violations(reports)
+                run.log_event(phase.id, "fix_gate_violations", {"violations": violations})
+                fix_prompt = f"{fix_prompt}\n\n{_correction('gate_correction', violations='\\n'.join(violations))}"
+    return False, "review loop exhausted"  # unreachable: every branch returns
+
+
 def run_build_review(
     conn,
     repo_dir: Path,
@@ -585,91 +716,25 @@ def run_build_review(
     """Multi-lens review of the working-tree changes: reviewers → scorer → gate (>=50
     blocks) → bounded fix rounds with the fixer, re-reviewed each round.
 
-    The user's own WIP (dirty at chain start) is exempt from the fixer's rollback —
-    reviewers see it, but only verified findings get fixed, and only by the fixer's
-    claimed changes. ``exempt_paths`` (the trace db) is invisible to reviewers and
-    survives the fixer's rollback. ``env_dir`` is the roster's home for secrets.
-    Returns (accepted, reason).
+    The loop itself is :func:`_review_fix_loop`, shared with the review wiring
+    inside ``run_plan_build_test``. The user's own WIP (dirty at chain start) is
+    exempt from the fixer's rollback — reviewers see it, but only verified findings
+    get fixed, and only by the fixer's claimed changes. ``exempt_paths`` (the trace
+    db) is invisible to reviewers and survives the fixer's rollback. ``env_dir`` is
+    the roster's home for secrets. Returns (accepted, reason).
     """
     run = Run.create(
         conn, request="build-review: working-tree changes", agent=reviewer_cfgs[0]["name"],
         model=reviewer_cfgs[0]["model"], repo=str(repo_dir),
     )
-    baseline = set(changed_files(repo_dir))  # the user's WIP — exempt from rollback
-    fixer_allow = baseline | (exempt_paths or set())
-    accepted = False
-    reason = ""
     try:
-        for round_no in range(1, max_rounds + 1):
-            diff = _working_tree_diff(repo_dir, exempt_paths=exempt_paths)
-            if not diff.strip():
-                run.finish(accepted=True, reason="no changes to review")
-                return True, "no changes to review"
-
-            findings: list[dict] = []
-            for rcfg in reviewer_cfgs:
-                with run.phase(f"review:{rcfg['name']}:r{round_no}", kind="agent", owner=rcfg["name"]) as phase:
-                    env = call_agent(
-                        run, phase, _review_prompt(rcfg["name"], diff), rcfg,
-                        output_type=FindingsOutput, agent_fn=agent_fn, repo_dir=repo_dir,
-                        timeout_s=timeout_s, env_dir=env_dir,
-                    )
-                    phase.log("findings", {"count": len(env.findings)})
-                    findings.extend(f.model_dump() for f in env.findings)
-
-            with run.phase(f"score:r{round_no}", kind="agent", owner=scorer_cfg["name"]) as phase:
-                score_prompt = _correction(
-                    "score_findings",
-                    findings=json_dumps({"issues": findings}),
-                    diff=diff,
-                )
-                scored = call_agent(
-                    run, phase, score_prompt, scorer_cfg,
-                    output_type=ScoredOutput, agent_fn=agent_fn, repo_dir=repo_dir,
-                    timeout_s=timeout_s, env_dir=env_dir,
-                )
-                phase.log("scored", {"count": len(scored.findings)})
-
-            blocked = [f for f in scored.findings if f.score >= 50]
-            with run.phase(f"gate:r{round_no}", kind="code", owner="code") as phase:
-                phase.log(
-                    "review_gate",
-                    {"total": len(scored.findings), "blocked": len(blocked), "threshold": 50},
-                )
-                gate_ok = not blocked
-
-            if gate_ok:
-                accepted = True
-                reason = "no findings scored >=50"
-                break
-            if round_no == max_rounds:
-                reason = f"{len(blocked)} findings scored >=50 after final round: " + "; ".join(
-                    f"{f.file}:{f.line} {f.description[:80]} (score {f.score})" for f in blocked
-                )
-                break
-
-            findings_json = json_dumps({"issues": [f.model_dump() for f in blocked]})
-            with run.phase(f"fix:r{round_no}", kind="agent", owner=fixer_cfg["name"]) as phase:
-                # The fixer claims everything it touched — including edits to the
-                # user's baseline files; unclaimed changes are rolled back. Gate
-                # violations are corrected in-session (never cold-restart).
-                fix_prompt = _correction("fix_findings", findings=findings_json, diff=diff[:40000])
-                for attempt in range(1, 3):
-                    fix_envelope = call_agent(
-                        run, phase, fix_prompt, fixer_cfg,
-                        output_type=BuildOutput, agent_fn=agent_fn, repo_dir=repo_dir,
-                        timeout_s=timeout_s, env_dir=env_dir,
-                    )
-                    reports = gate_reports(fix_envelope, repo_dir, allow=fixer_allow)
-                    phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
-                    if all(r.passed for r in reports):
-                        break
-                    violations = _violations(reports)
-                    run.log_event(phase.id, "fix_gate_violations", {"violations": violations})
-                    fix_prompt = f"{fix_prompt}\n\n{_correction('gate_correction', violations='\\n'.join(violations))}"
+        accepted, reason = _review_fix_loop(
+            run, repo_dir, reviewer_cfgs, scorer_cfg, fixer_cfg, max_rounds,
+            agent_fn, timeout_s,
+            exempt_paths=exempt_paths, env_dir=env_dir, diff_base="HEAD",
+        )
     except BaseException as exc:
         run.finish(accepted=False, reason=f"{type(exc).__name__}: {exc}")
         raise
-
     run.finish(accepted=accepted, reason=reason)
     return accepted, reason

@@ -17,7 +17,13 @@ import sys
 from pathlib import Path
 
 from .agent_pi import run_pi
-from .chains import run_build_review, run_build_test, run_plan_build_test, _stdin_checkpoint
+from .chains import (
+    DEFAULT_REVIEW_LENSES,
+    _stdin_checkpoint,
+    run_build_review,
+    run_build_test,
+    run_plan_build_test,
+)
 from .config import ConfigError, load_config, resolve_agent
 from .db import connect, trace_exemptions as _trace_exemptions
 from .envelope import RunOutput
@@ -149,6 +155,9 @@ def cmd_plan_build_test(args) -> int:
         return 2
     ask = args.checkpoint if args.checkpoint is not None else bool(cfg["defaults"].get("checkpoint", False))
     checkpoint_fn = _stdin_checkpoint if ask else None
+    review_flag = args.review if args.review is not None else bool(cfg["defaults"].get("review", True))
+    reviewer_cfgs = [resolve_agent(cfg, n) for n in DEFAULT_REVIEW_LENSES] if review_flag else []
+    review_scorer = resolve_agent(cfg, "scorer") if review_flag else None
     rc = _require_clean_tree(repo_dir)
     if rc:
         return rc
@@ -170,6 +179,9 @@ def cmd_plan_build_test(args) -> int:
             repo_dir=repo_dir,
             max_rounds=args.max_rounds,
             checkpoint_fn=checkpoint_fn,
+            review=review_flag,
+            reviewer_cfgs=reviewer_cfgs,
+            scorer_cfg=review_scorer,
             timeout_s=timeout_s,
             exempt_paths=_trace_exemptions(repo_dir, _db_path(cfg, args.config)),
             env_dir=config_dir,
@@ -408,6 +420,12 @@ def main(argv: list[str] | None = None) -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Ask before the final commit lands (default: defaults.checkpoint in the roster)",
+    )
+    p_pbt.add_argument(
+        "--review",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Code-review gate before the final commit (default: defaults.review in the roster, on)",
     )
     p_pbt.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_pbt.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="Target repository")

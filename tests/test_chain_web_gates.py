@@ -29,6 +29,28 @@ BUILD_JSON = (
     '"commit_message": "feat: add feature.txt per plan"}'
 )
 
+# The inline code review (same lenses the CLI build-review defaults to).
+REVIEWERS = [
+    {"name": "review-conventions", "model": "zai/glm-5.3-flash", "thinking": "medium"},
+    {"name": "review-bugs", "model": "zai/glm-5.3-flash", "thinking": "high"},
+]
+SCORER = {"name": "scorer", "model": "zai/glm-5.3-flash", "thinking": "medium"}
+CLEAN_FINDINGS = '{"status": "success", "summary": "no violations", "findings": []}'
+CLEAN_SCORED = '{"status": "success", "summary": "verified", "findings": []}'
+BLOCKING_FINDINGS = (
+    '{"status": "success", "summary": "one violation", "findings": ['
+    '{"file": "feature.txt", "line": 1, "description": "spanish text in code", "reason": "AGENTS.md language policy"}]}'
+)
+BLOCKING_SCORED = (
+    '{"status": "success", "summary": "verified", "findings": ['
+    '{"file": "feature.txt", "line": 1, "description": "spanish text in code", '
+    '"reason": "real", "score": 75}]}'
+)
+FIX_BUILD = (
+    '{"status": "success", "summary": "fixed", "artifacts": [], '
+    '"changed_files": ["feature.txt"], "commit_message": ""}'
+)
+
 
 class StubAgent:
     def __init__(self, outputs, side_effects=None):
@@ -340,3 +362,129 @@ def test_agent_timeout_reaches_the_agent_layer(repo, tmp_path):
     assert accepted, reason
     assert agent.calls, "the chain ran agents"
     assert all(call.get("timeout_s") == 600 for call in agent.calls)
+
+
+def test_review_gate_passes_then_the_commit_lands(repo, tmp_path):
+    """The inline review runs after the last green test round and before the
+    commit: reviewers → scorer → gate, no fix phase when nothing blocks."""
+    agent = StubAgent(
+        [PLAN_JSON, BUILD_JSON, CLEAN_FINDINGS, CLEAN_FINDINGS, CLEAN_SCORED],
+        side_effects=[write_plan, write_feature],
+    )
+    tests = StubTests([0])
+    conn = connect(tmp_path / "factory.db")
+    accepted, reason = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=agent, test_fn=tests,
+        review=True, reviewer_cfgs=REVIEWERS, scorer_cfg=SCORER,
+    )
+    assert accepted, reason
+    assert _phases(conn) == [
+        "plan", "plan_gates", "handoff", "commit:plan", "build:r1", "test:r1",
+        "review:review-conventions:r1", "review:review-bugs:r1", "score:r1", "gate:r1",
+        "commit",
+    ]
+    assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "accepted"
+    # the first reviewer read the diff material (the untracked feature file)
+    assert "feature" in agent.calls[2]["prompt"]
+
+
+def test_blocking_findings_trigger_one_fix_round_then_pass(repo, tmp_path):
+    """Findings scored >=50 block the gate: the builder (as fixer) corrects in
+    the same loop, and round 2 re-reviews before the commit lands."""
+    def fix_the_file(repo_dir: Path):
+        (repo_dir / "feature.txt").write_text("feature, all english now\n")
+
+    agent = StubAgent(
+        [
+            PLAN_JSON, BUILD_JSON,                                   # plan + build
+            BLOCKING_FINDINGS, BLOCKING_FINDINGS, BLOCKING_SCORED,   # round 1: blocked
+            FIX_BUILD,                                               # the fixer
+            CLEAN_FINDINGS, CLEAN_FINDINGS, CLEAN_SCORED,            # round 2: clean
+        ],
+        side_effects=[write_plan, write_feature, None, None, None, fix_the_file, None, None, None],
+    )
+    tests = StubTests([0])
+    conn = connect(tmp_path / "factory.db")
+    accepted, reason = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=agent, test_fn=tests,
+        review=True, reviewer_cfgs=REVIEWERS, scorer_cfg=SCORER,
+    )
+    assert accepted, reason
+    phases = _phases(conn)
+    assert phases.index("gate:r1") < phases.index("fix:r1")
+    assert phases.index("fix:r1") < phases.index("review:review-conventions:r2")
+    assert phases.index("review:review-bugs:r2") < phases.index("score:r2")
+    assert phases.index("score:r2") < phases.index("gate:r2") < phases.index("commit")
+    # the blocked findings reached the fixer (call 5: planner, builder, 2 reviewers, scorer, fixer)
+    assert "spanish text" in agent.calls[5]["prompt"]
+    # the fixer's claimed work survived into the working tree
+    assert (repo / "feature.txt").read_text() == "feature, all english now\n"
+
+
+def test_exhausted_review_rounds_fail_the_chain(repo, tmp_path):
+    """Findings still >=50 after the bounded fix rounds fail the chain: the
+    pr_approval pause, commit and deliver are never reached."""
+    agent = StubAgent(
+        [
+            PLAN_JSON, BUILD_JSON,
+            BLOCKING_FINDINGS, BLOCKING_FINDINGS, BLOCKING_SCORED,   # round 1: blocked
+            FIX_BUILD,                                               # the fixer tried
+            BLOCKING_FINDINGS, BLOCKING_FINDINGS, BLOCKING_SCORED,   # round 2: still blocked
+        ],
+        side_effects=[write_plan, write_feature] + [None] * 7,
+    )
+    tests = StubTests([0])
+    conn = connect(tmp_path / "factory.db")
+    accepted, reason = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=agent, test_fn=tests,
+        review=True, reviewer_cfgs=REVIEWERS, scorer_cfg=SCORER,
+    )
+    assert not accepted
+    assert "findings scored >=50" in reason
+    assert conn.execute("SELECT status FROM sessions").fetchone()[0] == "failed"
+    phases = _phases(conn)
+    assert "gate:r1" in phases and "gate:r2" in phases  # both rounds ran
+    assert "checkpoint" not in phases
+    assert "commit" not in phases and "deliver" not in phases
+
+
+def test_review_toggle_off_skips_review(repo, tmp_path):
+    """The chain's review default is off (call sites read defaults.review): no
+    review phases, no reviewer/scorer agent calls — byte-for-byte the old chain."""
+    agent = StubAgent([PLAN_JSON, BUILD_JSON], side_effects=[write_plan, write_feature])
+    tests = StubTests([0])
+    conn = connect(tmp_path / "factory.db")
+    accepted, reason = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=agent, test_fn=tests,  # no review kwargs: the chain default
+    )
+    assert accepted, reason
+    assert not any(
+        p.startswith(("review:", "score:", "gate:", "fix:")) for p in _phases(conn)
+    )
+    assert len(agent.calls) == 2  # planner + builder only
+
+
+def test_review_diff_uses_the_given_base(repo, tmp_path):
+    """The board reviews the task-branch diff vs the origin default branch: the
+    diff spans the landed plan commit PLUS the uncommitted implementation."""
+    subprocess.run(["git", "checkout", "-b", "factory/t1"], cwd=str(repo),
+                   capture_output=True, check=True)
+    agent = StubAgent(
+        [PLAN_JSON, BUILD_JSON, CLEAN_FINDINGS, CLEAN_FINDINGS, CLEAN_SCORED],
+        side_effects=[write_plan, write_feature],
+    )
+    tests = StubTests([0])
+    conn = connect(tmp_path / "factory.db")
+    accepted, reason = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=agent, test_fn=tests,
+        review=True, reviewer_cfgs=REVIEWERS, scorer_cfg=SCORER, review_base="main",
+    )
+    assert accepted, reason
+    # the diff vs main covers the committed plan AND the uncommitted feature file
+    assert "Plan" in agent.calls[2]["prompt"]
+    assert "feature" in agent.calls[2]["prompt"]

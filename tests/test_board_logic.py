@@ -33,6 +33,12 @@ agents:
     purpose: plans
   - name: builder
     purpose: builds
+  - name: review-conventions
+    purpose: reviews conventions
+  - name: review-bugs
+    purpose: hunts bugs
+  - name: scorer
+    purpose: scores findings
 """
 
 
@@ -769,3 +775,46 @@ def test_board_passes_agent_timeout_to_the_chain(tmp_path):
     tid = board.create_task("knob", "r", repo_path(board, "alpha"))
     board._execute(tid)  # direct — no dispatcher needed
     assert captured.get("timeout_s") == 600
+
+
+def test_worker_wires_review_with_origin_base(tmp_path):
+    """Review on (the default): the worker resolves the lenses and the scorer
+    itself (call sites name agents) and points the diff at origin/<default> —
+    the task branch diff, landed plan commit included."""
+    board = make_board(tmp_path, cap=1)
+    captured = {}
+
+    def chain(conn, request, planner, builder, **kwargs):
+        captured.update(kwargs)
+        kwargs["on_run"](Run.create(conn, request, agent="a", model="m"))
+        return True, ""
+
+    board.chain_fn = chain
+    board.start()
+    tid = board.create_task("reviewed", "r", repo_path(board, "alpha"))
+    wait_until(lambda: board._task(tid)["status"] == "in_pr")
+    board.stop()
+    assert captured["review"] is True
+    assert captured["review_base"] == "origin/main"  # the board cuts branches from main here
+    assert [a["name"] for a in captured["reviewer_cfgs"]] == ["review-conventions", "review-bugs"]
+    assert captured["scorer_cfg"]["name"] == "scorer"
+
+
+def test_review_toggle_off_skips_the_review_wiring(tmp_path):
+    """defaults.review: off — the worker passes no review kwargs at all, so the
+    chain runs exactly as before the review gate existed."""
+    board = make_board(tmp_path, cap=1)
+    board.cfg["defaults"]["review"] = False
+    captured = {}
+
+    def chain(conn, request, planner, builder, **kwargs):
+        captured.update(kwargs)
+        kwargs["on_run"](Run.create(conn, request, agent="a", model="m"))
+        return True, ""
+
+    board.chain_fn = chain
+    board.start()
+    tid = board.create_task("unreviewed", "r", repo_path(board, "alpha"))
+    wait_until(lambda: board._task(tid)["status"] == "in_pr")
+    board.stop()
+    assert captured.get("review") is None  # not passed at all, not just False
