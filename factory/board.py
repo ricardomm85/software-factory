@@ -37,7 +37,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .agent_pi import kill_live_agents
-from .chains import CheckpointDeclined, _git, run_plan_build_test
+from .chains import CheckpointDeclined, _git, _pending_changes_summary, run_plan_build_test
 from .config import resolve_agent, resolve_repos
 from .db import trace_exemptions
 from .envelope import extract_json
@@ -297,6 +297,18 @@ class Board:
 
     # -- workers ----------------------------------------------------------------
 
+    def _back_to_backlog(self, task_id: str, note: str) -> None:
+        """A card that cannot start goes back to Backlog, unrunnable: the owner
+        sees the reason, fixes the cause, and presses review & run. Dispatch
+        skips unrunnable cards, so this never hot-loops."""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE tasks SET status = 'backlog', runnable = 0, note = ?, updated_at = ?"
+                " WHERE id = ?",
+                (note, _now(), task_id),
+            )
+            self.conn.commit()
+
     def _worker(self, task_id: str) -> None:
         try:
             self._execute(task_id)
@@ -373,14 +385,13 @@ class Board:
         repo_dir = Path(row["repo"])
         test_command = self._test_command(repo_dir)
         if not test_command.strip():
-            self._set_task(
-                task_id,
-                note="no test command — set repos.<name>.test_command or defaults.test_command",
+            self._back_to_backlog(
+                task_id, "can't start: no test command — set repos.<name>.test_command or defaults.test_command",
             )
             return
         problem = self._preflight(repo_dir)
         if problem:
-            self._set_task(task_id, note=problem)
+            self._back_to_backlog(task_id, f"can't start: {problem}")
             return
 
         branch = f"factory/{task_id}"
@@ -461,11 +472,11 @@ class Board:
                 exempt_paths=exempt,
                 env_dir=self.config_dir,
             )
-        except BaseException:
-            problem = self._restore_worktree(repo_dir, exempt)
-            if problem:
-                print(f"task {task_id}: {problem}", file=sys.stderr)
-            raise
+        except Exception as exc:
+            # The run failed mid-chain; its uncommitted edits stay in the tree
+            # until the owner decides below — never destroyed on the board's
+            # own authority.
+            accepted, reason = False, f"{type(exc).__name__}: {exc}"
         finally:
             # Discovered findings become cards on every ending: a chain that
             # raises (declined pause, failed push) still left its envelopes in
@@ -478,13 +489,34 @@ class Board:
         if accepted:
             self._set_task(task_id, status="in_pr", pr_url=holder.get("pr_url", ""), note="")
         else:
-            # Failed or declined: the run's uncommitted edits are the board's own
-            # debris — remove them, or the rerun button meets a dirty-tree wall.
-            problem = self._restore_worktree(repo_dir, exempt)
-            note = reason or "run failed"
-            if problem:
-                note += f"; {problem}"
-            self._set_task(task_id, note=note)
+            self._set_task(task_id, note=self._settle_failed(
+                task_id, repo_dir, exempt, holder.get("run_id", ""), reason
+            ))
+
+    def _settle_failed(self, task_id: str, repo_dir: Path, exempt_paths: set[str],
+                       run_id: str, reason: str) -> str:
+        """A failed or declined run may hold uncommitted edits. They are never
+        destroyed on the board's own authority: with anything pending, the card
+        parks on a cleanup pause showing the pending changes — approved restores
+        the tree (reset + clean), rejected keeps every edit for the owner to
+        dispose of. A clean tree settles without asking."""
+        dirty = _git("status", "--porcelain", repo_dir=repo_dir).stdout.strip()
+        status = "approved"
+        if dirty:
+            pending = _pending_changes_summary(repo_dir, exempt_paths=exempt_paths)
+            pause_id = self.open_pause(task_id, "cleanup_approval", {"pending": pending},
+                                       run_id=run_id)
+            status = self.wait_pause(pause_id)
+        if not dirty or status != "approved":
+            kept = reason or "run failed"
+            if dirty:
+                return f"{kept}; worktree left untouched at your request — dispose by hand"
+            return kept
+        problem = self._restore_worktree(repo_dir, exempt_paths)
+        note = reason or "run failed"
+        if problem:
+            note += f"; worktree restore failed: {problem}"
+        return note
 
     def _deliver(self, repo_dir: Path, branch: str, title: str, prompt: str, run_id: str) -> dict:
         """Branch per task ends here: push it and open the PR. The deterministic
@@ -716,6 +748,8 @@ def _pause_headline(pause) -> str:
         return f"{n} question{'s' if n != 1 else ''}"
     if pause["type"] == "plan_approval":
         return f"plan: {req.get('plan_path') or 'unwritten'}"
+    if pause["type"] == "cleanup_approval":
+        return "worktree has this run's edits"
     return "approve the PR push"
 
 
@@ -974,6 +1008,20 @@ def render_pause(board: Board, pause_id: str) -> tuple[str, int]:
             + "<label>or ask for changes<br><textarea name='answer' rows='4'></textarea></label><br>"
             + "<button type='submit' name='action' value='send'>send corrections</button> "
             + "<button type='submit' name='action' value='reject'>reject the plan</button>"
+            + "</form>"
+        )
+    elif row["type"] == "cleanup_approval":
+        body = (
+            head
+            + "<div class='summary'><p><strong>the failed run left these changes"
+            + " uncommitted</strong></p>"
+            + f"<pre>{_esc(req.get('pending') or '-')}</pre></div>"
+            + "<p class='muted'>Approving restores the tree (reset + clean, trace excluded);"
+            + " rejecting keeps every edit for you to dispose of by hand.</p>"
+            + f"<form method='post' action='/pause/{pid}'>"
+            + ("<button type='submit' name='action' value='approve'>"
+               "restore — discard the attempt's edits</button> ")
+            + "<button type='submit' name='action' value='reject'>keep them</button>"
             + "</form>"
         )
     else:  # pr_approval

@@ -244,6 +244,27 @@ def test_pause_page_renders_plan_and_pr_approvals(server):
     assert board.pause_row(pr_pid)["status"] == "rejected"
 
 
+def test_pause_page_renders_cleanup_approval(server):
+    board, base = server
+    board.stop()
+    tid = board.create_task("messy", "p", str(Path(board.repos[0]["path"])))
+    run = Run.create(board.conn, "plan-build-test: p", agent="a", model="m")
+    board._set_task(tid, status="working", latest_run=run.id)
+    pid = board.open_pause(tid, "cleanup_approval",
+                           {"pending": "pending changes:\n M src/x.php"}, run_id=run.id)
+    code, html = get(f"{base}/pause/{pid}")
+    assert code == 200
+    assert "left these changes uncommitted" in html and "M src/x.php" in html
+    assert "discard the attempt" in html and "keep them" in html
+    code, body = post(f"{base}/pause/{pid}", {"action": "reject", "answer": ""})
+    assert board.pause_row(pid)["status"] == "rejected"
+    # the card's waiting badge names the cleanup pause
+    pid2 = board.open_pause(tid, "cleanup_approval", {"pending": "x"}, run_id=run.id)
+    code, html = get(f"{base}/")
+    # the headline contains an apostrophe: match the escaped form's stable prefix
+    assert "worktree has this run" in html
+
+
 def test_unknown_pages(server):
     board, base = server
     code, html = get(f"{base}/pause/9999")

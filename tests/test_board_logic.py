@@ -307,11 +307,15 @@ def test_failed_run_restores_the_worktree_for_reruns(tmp_path):
     repo = Path(repo_path(board, "alpha"))
     tid = board.create_task("doomed", "r", str(repo))
     board.start()
+    # the board never destroys on its own authority: it parks on a cleanup pause
+    wait_until(lambda: board.conn.execute(
+        "SELECT COUNT(*) FROM pauses WHERE status = 'waiting'").fetchone()[0] == 1)
+    board.resolve_pause(board.conn.execute("SELECT id FROM pauses").fetchone()[0], "approved")
     wait_until(lambda: "tests failed" in board._task(tid)["note"])
     board.stop()
     status = subprocess.run(["git", "status", "--porcelain"], cwd=str(repo),
                             capture_output=True, text=True, check=True).stdout
-    assert status.strip() == ""  # the failed run's debris is gone
+    assert status.strip() == ""  # approved: the failed run's debris is gone
     board.chain_fn = fake_chain(accepted=True)
     board.rerun_task(tid)
     board._execute(tid)  # direct, no dispatcher running after stop()
@@ -332,6 +336,9 @@ def test_declined_run_restores_the_worktree_too(tmp_path):
     repo = Path(repo_path(board, "alpha"))
     tid = board.create_task("rejected", "r", str(repo))
     board.start()
+    wait_until(lambda: board.conn.execute(
+        "SELECT COUNT(*) FROM pauses WHERE status = 'waiting'").fetchone()[0] == 1)
+    board.resolve_pause(board.conn.execute("SELECT id FROM pauses").fetchone()[0], "approved")
     wait_until(lambda: "declined" in board._task(tid)["note"])
     board.stop()
     status = subprocess.run(["git", "status", "--porcelain"], cwd=str(repo),
@@ -340,13 +347,58 @@ def test_declined_run_restores_the_worktree_too(tmp_path):
     assert board._task(tid)["status"] == "working"
 
 
-def test_preflight_notes_are_recorded(tmp_path):
+def test_declined_run_can_keep_the_worktree(tmp_path):
+    """Rejecting the cleanup pause keeps every edit: the owner disposes of the
+    attempt's changes by hand, and the note says so."""
+    def declining_chain(conn, request, planner, builder, repo_dir, **kwargs):
+        run = Run.create(conn, request, agent="a", model="m")
+        kwargs["on_run"](run)
+        (Path(repo_dir) / "impl.txt").write_text("uncommitted by design\n")
+        raise CheckpointDeclined("declined at the pre-commit checkpoint")
+
+    board = make_board(tmp_path, cap=1, chain_fn=declining_chain)
+    repo = Path(repo_path(board, "alpha"))
+    tid = board.create_task("rejected", "r", str(repo))
+    board.start()
+    wait_until(lambda: board.conn.execute(
+        "SELECT COUNT(*) FROM pauses WHERE status = 'waiting'").fetchone()[0] == 1)
+    board.resolve_pause(board.conn.execute("SELECT id FROM pauses").fetchone()[0], "rejected")
+    wait_until(lambda: "left untouched" in board._task(tid)["note"])
+    board.stop()
+    assert (repo / "impl.txt").exists()  # kept, not destroyed
+    # the pending summary was shown to the owner before they decided
+    req = board.conn.execute("SELECT request FROM pauses").fetchone()[0]
+    assert "impl.txt" in req
+
+
+def test_preflight_failure_returns_the_card_to_backlog_blocked(tmp_path):
+    """A card that cannot start never clogs Working: it goes back to Backlog,
+    unrunnable, with the reason on it. Dispatch skips it (no hot loop); the
+    owner fixes the cause and presses review & run."""
+    board = make_board(tmp_path, cap=1, chain_fn=fake_chain(), skip_preflight=False)
+    repo = Path(repo_path(board, "alpha"))
+    (repo / "owner-wip.txt").write_text("dirty on purpose\n")
+    tid = board.create_task("blocked by dirt", "r", str(repo))
+    board.start()
+    wait_until(lambda: "can't start" in board._task(tid)["note"])
+    board.stop()
+    row = board._task(tid)
+    assert row["status"] == "backlog" and row["runnable"] == 0
+    assert "working tree not clean" in row["note"]
+    # and a later dispatch does not pick it up on its own
+    board._stop.clear()
+    board._dispatch()
+    assert board._task(tid)["status"] == "backlog" and board._task(tid)["runnable"] == 0
+
+
+def test_missing_repo_goes_back_to_backlog_blocked(tmp_path):
     board = make_board(tmp_path, cap=1, chain_fn=fake_chain(), skip_preflight=False)
     tid = board.create_task("ghost hunt", "r", str(tmp_path / "ghost"))
     board.start()
     wait_until(lambda: "does not exist" in board._task(tid)["note"])
     board.stop()
-    assert board._task(tid)["status"] == "working" and board._task(tid)["latest_run"] == ""
+    row = board._task(tid)
+    assert row["status"] == "backlog" and row["runnable"] == 0 and row["latest_run"] == ""
 
 
 def test_reaper_settles_orphaned_runs_and_expires_pauses(tmp_path):
