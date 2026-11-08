@@ -102,6 +102,17 @@ cards in a local kanban, answer the factory's questions, and approve the PR push
 $ factory serve          →  the board at http://127.0.0.1:8666
 ```
 
+## The board's surface
+
+The visual layer is small by design: `factory/web/` renders every page from one shared
+page skeleton — `scaffold` owns that skeleton, `kanban` the board cards and pause pages,
+`runs` the runs index and each run's timeline. There are exactly two real static assets:
+`static/style.css` (one dark theme) and `static/app.js` — fragment polling every 4s, an
+elapsed ticker for running phases, a client-side filter for the archived table. Live
+pages poll fragments instead of reloading: the poller swaps the region only when its
+content actually changed, and a `<noscript>` fallback keeps everything readable without
+JavaScript.
+
 ## 🧰 The commands
 
 | command | what it does |
