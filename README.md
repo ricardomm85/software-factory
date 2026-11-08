@@ -95,6 +95,13 @@ uv run factory plan-build-test "add a fibonacci function" --repo ~/Projects/demo
 That's it — [pi](https://github.com/badlogic/pi-mono) is the coding agent (installed
 separately), GLM-5.3-flash is the brain, your repo is the workplace.
 
+Prefer the browser: the `factory serve` task board is where you create tasks as
+cards in a local kanban, answer the factory's questions, and approve the PR push.
+
+```console
+$ factory serve          →  the board at http://127.0.0.1:8666
+```
+
 ## 🧰 The commands
 
 | command | what it does |
