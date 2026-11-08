@@ -9,8 +9,9 @@ defaults:
   checkpoint: false                # ask the human before the final commit lands (plan-build-test)
   max_concurrent_runs: 1           # global cap on simultaneous runs — size it to the box's RAM
                                    # (the target repos' Chrome E2E suites are the heavy part)
-  agent_timeout_s: 600             # seconds each agent call may run — planners thinking high
-                                   # need more than 300 (three real board runs died at 300s)
+  agent_timeout_s: 3600            # seconds each agent call may run — one hour: planner
+                                   # passed at 540s, builder died at 600012 ms on a
+                                   # multi-file refactor (real run, today)
 
 # The board (factory serve) offers exactly these repos, by name.
 # test_command is optional per repo and falls back to defaults.test_command.
