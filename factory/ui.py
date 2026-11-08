@@ -211,11 +211,14 @@ def render_run(conn: sqlite3.Connection, run_id: str) -> tuple[str, int]:
     rows = []
     for p, dur, secs in zip(phases, durations, totals):
         pct = round(100.0 * secs / total, 1)
+        # Phases are born fail and only flip on a clean exit: an open phase is
+        # running, not failing — showing fail for it reads as an error.
+        badge = "running" if p["ended_at"] is None else p["status"]
         rows.append(
             "<tr>"
             f"<td>#{p['seq']}</td><td><code>{_esc(p['name'])}</code></td>"
             f"<td class='muted'>{_esc(p['kind'])}/{_esc(p['owner'])}</td>"
-            f"<td>{_badge(p['status'])}</td><td>{_esc(dur)}</td>"
+            f"<td>{_badge(badge)}</td><td>{_esc(dur)}</td>"
             f"<td style='width:30%'><div class='bar' style='width:{pct}%'></div></td>"
             f"<td>{_esc(_short(p['error'], TEXT_CAP)) if p['error'] else ''}</td>"
             "</tr>"
