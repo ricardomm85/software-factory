@@ -244,6 +244,7 @@ def run_build_test(
     test_fn=run_test_command,
     exempt_paths: set[str] | None = None,
     env_dir: Path | None = None,
+    timeout_s: int = 300,
 ) -> bool:
     """Builder + code(test) with bounded rounds. Returns whether the run was accepted.
 
@@ -257,7 +258,7 @@ def run_build_test(
     try:
         accepted, reason, _ = _build_test_rounds(
             run, prompt, agent_cfg, test_command, repo_dir, max_rounds, agent_fn, test_fn,
-            exempt_paths=exempt_paths, env_dir=env_dir,
+            exempt_paths=exempt_paths, env_dir=env_dir, timeout_s=timeout_s,
         )
     except BaseException as exc:
         run.finish(accepted=False, reason=f"{type(exc).__name__}: {exc}")

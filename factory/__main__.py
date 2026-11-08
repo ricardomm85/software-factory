@@ -110,6 +110,12 @@ def cmd_build_test(args) -> int:
 
     conn = connect(_db_path(cfg, args.config))
     accepted = False
+    timeout_s = args.agent_timeout if args.agent_timeout is not None else int(
+        cfg["defaults"].get("agent_timeout_s", 300)
+    )
+    if timeout_s < 1:
+        print(f"invalid --agent-timeout {timeout_s}: must be an integer >= 1", file=sys.stderr)
+        return 2
     try:
         accepted = run_build_test(
             conn,
@@ -118,6 +124,7 @@ def cmd_build_test(args) -> int:
             test_command=test_command,
             repo_dir=repo_dir,
             max_rounds=args.max_rounds,
+            timeout_s=timeout_s,
             exempt_paths=_trace_exemptions(repo_dir, _db_path(cfg, args.config)),
             env_dir=config_dir,
         )
@@ -147,6 +154,12 @@ def cmd_plan_build_test(args) -> int:
         return rc
 
     conn = connect(_db_path(cfg, args.config))
+    timeout_s = args.agent_timeout if args.agent_timeout is not None else int(
+        cfg["defaults"].get("agent_timeout_s", 300)
+    )
+    if timeout_s < 1:
+        print(f"invalid --agent-timeout {timeout_s}: must be an integer >= 1", file=sys.stderr)
+        return 2
     try:
         accepted, reason = run_plan_build_test(
             conn,
@@ -157,10 +170,7 @@ def cmd_plan_build_test(args) -> int:
             repo_dir=repo_dir,
             max_rounds=args.max_rounds,
             checkpoint_fn=checkpoint_fn,
-            timeout_s=int(
-                getattr(args, "agent_timeout", None)
-                or cfg["defaults"].get("agent_timeout_s", 300)
-            ),
+            timeout_s=timeout_s,
             exempt_paths=_trace_exemptions(repo_dir, _db_path(cfg, args.config)),
             env_dir=config_dir,
         )
@@ -368,6 +378,12 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--agent", default="builder", help="Builder agent from the roster")
     p_bt.add_argument("--test-command", default=None, help="Override the roster's test_command")
     p_bt.add_argument("--max-rounds", type=int, default=3, help="Bounded fix rounds")
+    p_bt.add_argument(
+        "--agent-timeout",
+        type=int,
+        default=None,
+        help="Seconds each agent call may run (default: defaults.agent_timeout_s, else 300)",
+    )
     p_bt.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_bt.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="Target repository")
     p_bt.set_defaults(func=cmd_build_test)
