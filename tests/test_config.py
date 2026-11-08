@@ -99,3 +99,22 @@ def test_quoted_review_toggle_is_rejected(tmp_path):
     quoted = VALID.replace("  thinking: medium\n", "  thinking: medium\n  review: 'on'\n")
     with pytest.raises(ConfigError, match="must be a boolean"):
         load_config(write(tmp_path, quoted))
+
+
+def test_review_lenses_load_from_roster(tmp_path):
+    # The lens roster lives in config (data, not Python); call sites read it.
+    custom = VALID.replace(
+        "  thinking: medium\n",
+        "  thinking: medium\n  review_lenses: [review-bugs]\n",
+    )
+    cfg = load_config(write(tmp_path, custom))
+    assert cfg["defaults"]["review_lenses"] == ["review-bugs"]
+
+
+def test_bad_review_lenses_are_rejected(tmp_path):
+    bad = VALID.replace("  thinking: medium\n", "  thinking: medium\n  review_lenses: 'review-bugs'\n")
+    with pytest.raises(ConfigError, match="review_lenses"):
+        load_config(write(tmp_path, bad))
+    empty = VALID.replace("  thinking: medium\n", "  thinking: medium\n  review_lenses: []\n")
+    with pytest.raises(ConfigError, match="review_lenses"):
+        load_config(write(tmp_path, empty))

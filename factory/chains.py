@@ -32,7 +32,9 @@ from .envelope import (
 from .gates import GateReport, artifacts_exist, changed_files, diff_matches_claims, run_output_gate
 from .run import Run, call_agent, json_dumps
 
-# The default review lenses both chain call sites use (CLI --lenses default, board wiring).
+# Fallback when defaults.review_lenses is absent from the roster config; the
+# chain call sites (CLI plan-build-test, board) read the roster first. Note the
+# standalone `factory build-review --lenses` flag keeps its own flag default.
 DEFAULT_REVIEW_LENSES = ("review-conventions", "review-bugs")
 
 

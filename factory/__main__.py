@@ -156,7 +156,8 @@ def cmd_plan_build_test(args) -> int:
     ask = args.checkpoint if args.checkpoint is not None else bool(cfg["defaults"].get("checkpoint", False))
     checkpoint_fn = _stdin_checkpoint if ask else None
     review_flag = args.review if args.review is not None else bool(cfg["defaults"].get("review", True))
-    reviewer_cfgs = [resolve_agent(cfg, n) for n in DEFAULT_REVIEW_LENSES] if review_flag else []
+    lens_names = cfg["defaults"].get("review_lenses", DEFAULT_REVIEW_LENSES)
+    reviewer_cfgs = [resolve_agent(cfg, n) for n in lens_names] if review_flag else []
     review_scorer = resolve_agent(cfg, "scorer") if review_flag else None
     rc = _require_clean_tree(repo_dir)
     if rc:

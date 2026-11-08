@@ -426,7 +426,10 @@ class Board:
         if bool(self.cfg["defaults"].get("review", True)):
             review_kwargs = {
                 "review": True,
-                "reviewer_cfgs": [resolve_agent(self.cfg, n) for n in DEFAULT_REVIEW_LENSES],
+                "reviewer_cfgs": [
+                    resolve_agent(self.cfg, n)
+                    for n in self.cfg["defaults"].get("review_lenses", DEFAULT_REVIEW_LENSES)
+                ],
                 "scorer_cfg": resolve_agent(self.cfg, "scorer"),
                 "review_base": f"origin/{default}",  # the task branch diff vs origin default
             }
