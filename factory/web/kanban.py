@@ -136,8 +136,8 @@ def _archived_section(snap: dict) -> str:
         table = (
             "<table><tr><th>task</th><th>repo</th><th>result</th>"
             "<th>archived (UTC)</th><th>run</th><th>PR</th></tr>"
-            + "".join(rows)
-            + "</table>"
+            # the tbody id is the JS filter's handle (app.js reads #archive-rows)
+            f"<tbody id='archive-rows'>" + "".join(rows) + "</tbody></table>"
         )
     else:
         table = "<p class='muted'>nothing archived yet</p>"
