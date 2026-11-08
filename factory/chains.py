@@ -156,6 +156,7 @@ def _build_test_rounds(
     test_fn,
     exempt_paths: set[str] | None = None,
     env_dir: Path | None = None,
+    timeout_s: int = 300,
 ) -> tuple[bool, str, BuildOutput | None]:
     """Bounded build→test rounds. Returns (accepted, reason, final envelope).
 
@@ -184,6 +185,7 @@ def _build_test_rounds(
                 agent_fn=agent_fn,
                 repo_dir=repo_dir,
                 env_dir=env_dir,
+                timeout_s=timeout_s,
             )
             final_envelope = envelope
             if envelope.status != "success":
@@ -242,6 +244,7 @@ def run_build_test(
     test_fn=run_test_command,
     exempt_paths: set[str] | None = None,
     env_dir: Path | None = None,
+    timeout_s: int = 300,
 ) -> bool:
     """Builder + code(test) with bounded rounds. Returns whether the run was accepted.
 
@@ -255,7 +258,7 @@ def run_build_test(
     try:
         accepted, reason, _ = _build_test_rounds(
             run, prompt, agent_cfg, test_command, repo_dir, max_rounds, agent_fn, test_fn,
-            exempt_paths=exempt_paths, env_dir=env_dir,
+            exempt_paths=exempt_paths, env_dir=env_dir, timeout_s=timeout_s,
         )
     except BaseException as exc:
         run.finish(accepted=False, reason=f"{type(exc).__name__}: {exc}")
@@ -281,6 +284,7 @@ def run_plan_build_test(
     on_run=None,
     launched_by: str = "",
     human_rounds: int = 4,
+    timeout_s: int = 300,
     exempt_paths: set[str] | None = None,
     env_dir: Path | None = None,
 ) -> tuple[bool, str]:
@@ -328,7 +332,7 @@ def run_plan_build_test(
                 run, phase, planner_prompt, planner_cfg, repo_dir,
                 agent_fn=agent_fn, env_dir=env_dir,
                 questions_fn=questions_fn, plan_approval_fn=plan_approval_fn,
-                max_human_rounds=human_rounds,
+                max_human_rounds=human_rounds, timeout_s=timeout_s,
             )
         if plan_envelope.status != "success":
             # The planner decided the request is not actionable — do not nag it.
@@ -424,7 +428,7 @@ def run_plan_build_test(
         )
         accepted, reason, build_envelope = _build_test_rounds(
             run, builder_prompt, builder_cfg, test_command, repo_dir, max_rounds, agent_fn, test_fn,
-            exempt_paths=exempt_paths, env_dir=env_dir,
+            exempt_paths=exempt_paths, env_dir=env_dir, timeout_s=timeout_s,
         )
 
         if accepted:
@@ -477,6 +481,7 @@ def _plan_with_human_gates(
     questions_fn,
     plan_approval_fn,
     max_human_rounds: int,
+    timeout_s: int = 300,
 ) -> PlanOutput:
     """The planner loop behind the web gates (Phase 7).
 
@@ -490,7 +495,7 @@ def _plan_with_human_gates(
     """
     envelope = call_agent(
         run, phase, prompt, planner_cfg, output_type=PlanOutput,
-        agent_fn=agent_fn, repo_dir=repo_dir, env_dir=env_dir,
+        agent_fn=agent_fn, repo_dir=repo_dir, env_dir=env_dir, timeout_s=timeout_s,
     )
 
     rounds = 0
@@ -507,7 +512,7 @@ def _plan_with_human_gates(
         prompt = f"{prompt}\n\n{_correction('planner_answers', round=str(rounds), answers=answers)}"
         envelope = call_agent(
             run, phase, prompt, planner_cfg, output_type=PlanOutput,
-            agent_fn=agent_fn, repo_dir=repo_dir, env_dir=env_dir,
+            agent_fn=agent_fn, repo_dir=repo_dir, env_dir=env_dir, timeout_s=timeout_s,
         )
 
     if plan_approval_fn is None or envelope.status != "success" or envelope.questions:
@@ -528,7 +533,7 @@ def _plan_with_human_gates(
         prompt = f"{prompt}\n\n{_correction('plan_correction', decision=decision)}"
         envelope = call_agent(
             run, phase, prompt, planner_cfg, output_type=PlanOutput,
-            agent_fn=agent_fn, repo_dir=repo_dir, env_dir=env_dir,
+            agent_fn=agent_fn, repo_dir=repo_dir, env_dir=env_dir, timeout_s=timeout_s,
         )
     raise CheckpointDeclined(f"plan not approved after {max_human_rounds} rounds")
 

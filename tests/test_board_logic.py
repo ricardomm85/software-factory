@@ -753,3 +753,19 @@ def test_stop_kills_inflight_agent_subprocesses(tmp_path):
     wait_until(lambda: not board._workers, timeout_s=10)
     assert finished["code"] != 0          # killed by stop(), not waited out
     assert board._task(tid)["status"] == "in_pr"  # the chain unwound and settled
+
+
+def test_board_passes_agent_timeout_to_the_chain(tmp_path):
+    """defaults.agent_timeout_s reaches chain_fn as timeout_s — the knob is the
+    board's lever on every agent call inside the chain."""
+    captured = {}
+
+    def chain_fn(conn, request, planner, builder, **kwargs):
+        captured.update(kwargs)
+        return True, ""
+
+    board = make_board(tmp_path, chain_fn=chain_fn)
+    board.cfg["defaults"]["agent_timeout_s"] = 600
+    tid = board.create_task("knob", "r", repo_path(board, "alpha"))
+    board._execute(tid)  # direct — no dispatcher needed
+    assert captured.get("timeout_s") == 600

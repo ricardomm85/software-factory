@@ -61,6 +61,13 @@ def validate_config(cfg: dict) -> None:
             "it caps simultaneous runs globally — size it to the box's RAM"
         )
 
+    agent_timeout = defaults.get("agent_timeout_s", 300)
+    if not isinstance(agent_timeout, int) or isinstance(agent_timeout, bool) or agent_timeout < 1:
+        raise ConfigError(
+            f"defaults.agent_timeout_s must be an integer >= 1 (got {agent_timeout!r}); "
+            "it is each agent call's budget in seconds — planners thinking hard need more than 300"
+        )
+
     repos = cfg.get("repos", [])
     if not isinstance(repos, list):
         raise ConfigError("repos must be a list of mappings (name, path, optional test_command)")
