@@ -1,6 +1,6 @@
 # Plan — Personal Software Factory
 
-**Date:** 2026-11-08 · **Status:** Phases 0–8 closed — the factory is a product: an always-on board at `factory serve` that plans, builds, tests, reviews, asks, and ships PRs. Remaining: Phase 9 (scale, when it hurts) · **Workspace:** `~/Projects/software-factory`
+**Date:** 2026-11-08 · **Status:** Phases 0–8 closed — the factory is a product: an always-on board at `factory serve` that plans, builds, tests, reviews, asks, and ships PRs. Remaining: Phase 9 product surface (onboarding + repo-first, decided 2026-11-08) · Phase 10 scale (when it hurts) · **Workspace:** `~/Projects/software-factory`
 
 ## 1. Goal
 
@@ -29,6 +29,7 @@ surface, not the owner's desk.
 | Delivery | PR on GitHub (branch per task → push → `gh pr create`); card lands in In PR, moves to Archived on merge | Reviewable, revertible, and matches how the owner ships |
 | Deployment | Always-on home PC, one user, many repos; access from other devices via SSH tunnel or Tailscale, loopback binding stays | Standard ops (systemd user service); no auth to build while the port never leaves loopback |
 | Run cap | Global cap on simultaneous runs (config), sized to RAM | One-per-repo prevents git collisions, not RAM collisions — the target repos' Chrome E2E suites are the heavy part |
+| Product surface (2026-11-08) | Repo-first navigation; repos discovered from GitHub with clone-on-register; first-run setup UI for tokens | The owner's mental model: enter → see my repos → enter one → see its tasks; onboarding WRITES the same config-as-data files, it does not replace them |
 
 ## 3. The shape (what we copy from sssf)
 
@@ -76,7 +77,8 @@ Consolidated from the landscape (Warp, Factory.com, Huntley, MetaGPT, sssf):
 | 6 | **Task board** | `tasks` table (cards: title, prompt, repo, origin owner\|system, status, latest run), roster gains a `repos:` list (path + per-repo test command — the create form offers repos by name, not raw paths), `factory serve` daemon owning execution (stdlib threads; one active run per repo, FIFO per repo, global cap on simultaneous runs), create-task form, kanban view — columns **Backlog / Working / In PR** + separate **Archived** section, card detail = the existing run page | Create a task in the browser and watch it execute without a terminal |
 | 7 | **Web human gates** | `pauses` table (type `questions` \| `plan_approval` \| `pr_approval`; request, answer, status); plan envelope gains `questions` — the card parks with a waiting badge, you answer from the board, the same session resumes; plan approval before build; PR approval before push; CLI keeps the stdin checkpoint | A task cannot pass plan, build-start, or push without a board decision |
 | 8 | **PR delivery + discovered work** | branch per task off the default branch, commit, push, `gh pr create`, PR URL on the card (column In PR; Archived on merge); envelopes gain `discovered` findings that must NOT enter this PR — deterministic code turns them into Backlog cards with `origin_run` provenance | Card lands in In PR with its URL; out-of-scope findings become new cards, never silent scope creep |
-| 9 | **Scale, when it hurts** | Docker sandbox, external triggers (webhooks/issues), multi-run parallelism per repo, self-improvement, VPS | Unchanged principle: each item enters only when a real need arrives |
+| 9 | **Product surface** | First-run `/setup` onboarding: Z.AI token validated with a real API call, GitHub token validated against the API and used for push/PR, clone base folder — writes `.env` (0600) and the `repos:` section; add-repo flow from `gh repo list` with existing-clone detection or clone-to-path; repo-first navigation (home = repo cards with per-column counts, repo page = its kanban + create form) | A fresh machine reaches a managed repo through the browser alone |
+| 10 | **Scale, when it hurts** | Docker sandbox, external triggers (webhooks/issues), multi-run parallelism per repo, self-improvement, VPS | Unchanged principle: each item enters only when a real need arrives |
 
 Every phase ends in something **runnable**, not something designed.
 
@@ -248,9 +250,12 @@ tasks are created and directed from the local web board (columns **Backlog / Wor
 In PR** plus a separate **Archived** section), the factory parks cards to ask (plan
 questions, plan approval, PR approval), and delivery means an open PR. The old
 Phase 6 (scale) is Phase 9.
-**Next: Phase 9 (scale, when it hurts)** — Docker sandbox, external triggers,
-multi-run parallelism per repo, self-improvement. Each item enters only when a real
-need arrives; nothing is scheduled.
+**Decision (2026-11-08) — the board gets a front door.** Using the board live, the
+owner restated the expected shape: enter the factory → see the repos I have access
+to → enter one → see its pending tasks; first visit asks for the tokens and nothing
+else. Decisions recorded in §2; design in the Phase 9 design note.
+**Next: Phase 9 (product surface)** — `/setup` onboarding, add-repo from GitHub with
+clone-on-register, repo-first navigation. The old scale phase is Phase 10.
 
 **Phase 0 — CLOSED (2026-11-07).** Shipped: the `factory/` package (`config.py` roster
 loader + validator, `agent_pi.py` pi spawner with subprocess env injection, `env.py`
@@ -493,6 +498,36 @@ scored >=50**. 157 tests passing (54 new). Operational note for Phase 9: the
 review-bugs lens needs generous timeouts on diffs this size — two of the six runs
 died on it — so Phase 9 should design a bounded review surface or a lens timeout
 budget before scaling the board.
+
+### Phase 9 design note — the board gets a front door (added 2026-11-08)
+
+The owner's mental model, verbatim in spirit: *"al entrar a software factory yo
+vería un listado de los repos a los que tengo acceso; entro a uno y veo las tareas
+pendientes; la primera vez, un onboarding donde pongo el token de GLM y el de
+GitHub."* What changes:
+
+- **`/setup` runs once, when it matters.** The board detects a fresh install (no
+  `.env`, or no repos registered) and routes to setup instead of an empty board.
+  Three inputs: Z.AI token (validated with one real, cheap API call before
+  anything is written), GitHub token (validated against the API; it drives push
+  and `gh pr create` via `GH_TOKEN` for the daemon's subprocesses — no
+  interactive `gh auth login` on a headless box), and the clone base folder
+  (default: `~/Projects`). Only after both validations pass does setup write
+  `.env` (chmod 600) and the roster's `repos:` section.
+- **Config-as-data survives.** The UI *writes* `config.yaml` and `.env`; the files
+  stay the source of truth — hand edits still win, and the board reads them
+  fresh. Secrets are masked in every response and never logged.
+- **Repos come from GitHub.** The add-repo flow lists the owner's repositories
+  (`gh repo list`), and for each chosen one: detect an existing local clone
+  (search the base folder by name) or clone to a chosen path, then register it.
+  The factory still works on local clones — GitHub is the catalog, the disk is
+  the workspace.
+- **Repo-first navigation.** Home = one card per managed repo (name, per-column
+  card counts, last PR). A repo page is its kanban (the existing columns,
+  scoped) plus its create-task form. Run detail, pause pages and the runs index
+  stay as they are.
+- **What this is NOT.** No multi-tenancy, no accounts: one owner, localhost.
+  Onboarding is convenience, not a security boundary.
 
 ## References
 
