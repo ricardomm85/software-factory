@@ -94,7 +94,7 @@ def _task_card(t: dict) -> str:
         )
         parts.append(
             f"<div class='strip'><a href='{esc(t['pr_url'])}'>PR</a>{run_link} · "
-            f"auto-archives on merge — checks every 60s "
+            f"waits for your merge — auto-archives when merged (polls every 60s) "
             f"<form method='post' action='/tasks/{tid}/archive'>"
             f"<button type='submit'>archive</button></form></div>"
         )

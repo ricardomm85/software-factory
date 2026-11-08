@@ -31,6 +31,7 @@ surface, not the owner's desk.
 | Run cap | Global cap on simultaneous runs (config), sized to RAM | One-per-repo prevents git collisions, not RAM collisions — the target repos' Chrome E2E suites are the heavy part |
 | Product surface (2026-11-08) | Repo-first navigation; repos discovered from GitHub with clone-on-register; first-run setup UI for tokens | The owner's mental model: enter → see my repos → enter one → see its tasks; onboarding WRITES the same config-as-data files, it does not replace them |
 | Visual surface (2026-11-08) | `factory/web/` package + real `static/` assets, one dark theme, JS fragment polling (no reloads), cards name the live phase, run page as a plain-English timeline, archived as a searchable table | The owner's verdict on the working board was "no me entero de nada" — the factory must read at a glance; structure decided with the owner (see the Phase 9 "board's face" design note) |
+| Merging is human-only (2026-11-08) | The factory opens PRs and leaves them pending — it NEVER merges to main; only the owner merges, always via PR; the In PR card says so and the poller archives only after a human merge | The merge is the owner's acceptance gate: "shipped" means Ricardo merged it |
 
 ## 3. The shape (what we copy from sssf)
 

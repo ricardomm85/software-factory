@@ -105,7 +105,7 @@ $ factory serve          →  the board at http://127.0.0.1:8666
 The board is a dark, framework-free UI that reads at a glance: a Working card
 names the phase it is in right now ("building · 03:24") and pulses; parked
 cards show a blue "waiting on you" strip with one click to decide; In PR cards
-say "auto-archives on merge — checks every 60s"; the run page is a plain-English
+say "waits for your merge" — only a human merges to main, always via PR; the run page is a plain-English
 timeline (one step per phase, details collapsed); archived tasks are a searchable
 table. Pages poll small fragments every 4s instead of reloading. With JavaScript
 off it falls back to meta-refresh.
