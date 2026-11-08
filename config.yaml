@@ -20,6 +20,11 @@ defaults:
   agent_timeout_s: 3600            # seconds each agent call may run — one hour: planner
                                    # passed at 540s, builder died at 600012 ms on a
                                    # multi-file refactor (real run, today)
+  path_prepend:                    # directories put at the FRONT of PATH for every subprocess,
+    - ~/.nvm/versions/node/v22.23.2/bin   # so launching `factory serve` from any shell works.
+                                   # pi needs node >= 22.1; shells that resolve an older node
+                                   # (mise shims first) made every agent die in ~1s with a
+                                   # SyntaxError (runs 05bb601e and 11924468, today)
 
 # The board (factory serve) offers exactly these repos, by name.
 # test_command is optional per repo and falls back to defaults.test_command.

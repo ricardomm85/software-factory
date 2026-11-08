@@ -5,6 +5,7 @@ purpose. Model and effort are properties of the role; call sites name agents,
 never models.
 """
 
+import os
 import re
 from pathlib import Path
 
@@ -66,6 +67,16 @@ def validate_config(cfg: dict) -> None:
         raise ConfigError(
             f"defaults.agent_timeout_s must be an integer >= 1 (got {agent_timeout!r}); "
             "it is each agent call's budget in seconds — planners thinking hard need more than 300"
+        )
+
+    path_prepend = defaults.get("path_prepend", [])
+    if isinstance(path_prepend, str):
+        path_prepend = [path_prepend]
+    if not isinstance(path_prepend, list) or not all(isinstance(d, str) and d.strip() for d in path_prepend):
+        raise ConfigError(
+            f"defaults.path_prepend must be a non-empty string or a list of them "
+            f"(got {defaults.get('path_prepend')!r}); "
+            "each entry is a directory put at the front of PATH for every subprocess the factory spawns"
         )
 
     review = defaults.get("review", True)
@@ -186,3 +197,26 @@ def resolve_repos(cfg: dict) -> list[dict]:
             "test_command": test_command,
         })
     return out
+
+
+def path_prepend_dirs(cfg: dict) -> list[str]:
+    """``defaults.path_prepend`` as a list of ~-expanded directories, in order."""
+    dirs = cfg["defaults"].get("path_prepend", [])
+    if isinstance(dirs, str):
+        dirs = [dirs]
+    return [str(Path(d).expanduser()) for d in dirs]
+
+
+def apply_runtime_env(cfg: dict) -> None:
+    """Pin the factory's subprocess PATH from ``defaults.path_prepend``.
+
+    The factory owns its runtime environment: whoever launches ``factory serve``
+    (a login shell with mise shims, a systemd unit, a bare terminal) must not
+    change which node/pi/git the agents and test commands see. Call once at
+    startup, before anything spawns — every subprocess inherits os.environ.
+    """
+    dirs = path_prepend_dirs(cfg)
+    if not dirs:
+        return
+    extra = ":".join(dirs)
+    os.environ["PATH"] = f"{extra}:{os.environ.get('PATH', '')}"
