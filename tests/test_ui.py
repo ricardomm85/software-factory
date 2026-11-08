@@ -1,4 +1,4 @@
-"""Tests for the read-only observability UI: routes, escaping, isolation, enforcement."""
+"""Tests for the read-only observability pages: routes, escaping, isolation, enforcement."""
 
 import sqlite3
 import threading
@@ -10,7 +10,15 @@ import pytest
 
 from factory.db import connect
 from factory.run import Run
-from factory.ui import fmt_duration, make_handler, render_index, render_run, ui_connect
+from factory.web.runs import (
+    fmt_duration,
+    make_trace_handler,
+    render_index,
+    render_run,
+    render_run_fragment,
+    render_runs_fragment,
+)
+from factory.web.scaffold import phase_label, ui_connect
 
 
 def seed(conn) -> str:
@@ -48,16 +56,29 @@ def test_index_lists_runs_and_escapes_html(traced_db):
     assert "/tmp/target" in page                      # the repo column shows the target
 
 
-def test_run_page_waterfall_errors_and_pi_counts(traced_db):
+def test_phase_label_map():
+    assert phase_label("plan") == "planning"
+    assert phase_label("build:r2") == "building"
+    assert phase_label("review:scorer:r1") == "reviewing (scorer)"
+    assert phase_label("score:r1") == "scoring findings"
+    assert phase_label("fix:r3") == "fixing findings"
+    assert phase_label("deliver") == "opening the PR"
+    assert phase_label("checkpoint") == "waiting on you"
+    assert phase_label("custom_phase") == "custom_phase"   # honest fallback
+
+
+def test_run_page_timeline_errors_and_pi_counts(traced_db):
     db_path, run_id = traced_db
     page, code = render_run(ui_connect(db_path), run_id)
     assert code == 200
-    assert "#1" in page and "#2" in page              # waterfall in seq order
-    assert "build" in page and "review" in page
+    assert "#1" in page and "#2" in page              # timeline in seq order
+    assert "<code>build</code>" in page and "<code>review</code>" in page  # raw names stay
+    assert "building" in page and "reviewing" in page  # plain-English labels
     assert "RuntimeError: boom: the reviewer exploded" in page  # failure surfaces
     assert "2 pi stream events" in page               # streaming shown as counts
     assert "tool_call × 1" in page
     assert "envelope_ok" in page                      # orchestrator timeline present
+    assert "class='tl done'" in page and "class='tl fail'" in page  # step states
 
 
 def test_open_phase_shows_running_not_failed(traced_db):
@@ -104,7 +125,7 @@ def test_ui_connection_refuses_writes(traced_db):
 
 def test_server_routes_end_to_end(traced_db):
     db_path, run_id = traced_db
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(db_path))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_trace_handler(db_path))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -112,7 +133,7 @@ def test_server_routes_end_to_end(traced_db):
         with urllib.request.urlopen(f"{base}/") as resp:
             assert resp.status == 200 and run_id.encode() in resp.read()
         with urllib.request.urlopen(f"{base}/run/{run_id}") as resp:
-            assert resp.status == 200 and b"phase waterfall" in resp.read()
+            assert resp.status == 200 and b"timeline" in resp.read()
         for path in (f"{base}/run/unknown", f"{base}/nope"):
             try:
                 urllib.request.urlopen(path)
@@ -124,6 +145,50 @@ def test_server_routes_end_to_end(traced_db):
         server.server_close()
 
 
+def test_static_assets_served_with_types_and_whitelist(traced_db):
+    db_path, _ = traced_db
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_trace_handler(db_path))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with urllib.request.urlopen(f"{base}/static/style.css") as resp:
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("text/css")
+            assert b"--bg" in resp.read()               # the dark palette variables
+        with urllib.request.urlopen(f"{base}/static/app.js") as resp:
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("text/javascript")
+        for path in ("/static/nope.js", "/static/../factory/board.py", "/static/"):
+            try:
+                urllib.request.urlopen(f"{base}{path}")
+                raise AssertionError(f"{path} should have 404'd")
+            except urllib.error.HTTPError as exc:
+                assert exc.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_fragments_serve_timeline_and_table(traced_db):
+    db_path, run_id = traced_db
+    conn = ui_connect(db_path)
+    fragment, code = render_run_fragment(conn, run_id)
+    assert code == 200 and "timeline" in fragment and "events" in fragment
+    assert "<div data-live" not in fragment             # fragments are bare payloads
+    assert render_runs_fragment(conn).startswith("<table>")
+    fragment, code = render_run_fragment(conn, "nope")
+    assert code == 404
+
+
+def test_live_run_page_polls_a_fragment(traced_db):
+    db_path, _ = traced_db
+    conn = connect(db_path)
+    live = Run.create(conn, request="watch me", agent="builder", model="m-1")
+    page, code = render_run(ui_connect(db_path), live.id)
+    assert code == 200
+    assert "data-live" in page and f"/fragment/run/{live.id}" in page
+
+
 def test_ui_reads_while_a_writer_is_mid_transaction(traced_db):
     """WAL contract at the UI level: an uncommitted factory write never blocks the page."""
     db_path, run_id = traced_db
@@ -133,7 +198,7 @@ def test_ui_reads_while_a_writer_is_mid_transaction(traced_db):
         "INSERT INTO sessions (id, request, status, started_at) VALUES ('hot', 'in flight', 'running', 'now')"
     )
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(db_path))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_trace_handler(db_path))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/") as resp:
@@ -148,7 +213,7 @@ def test_ui_reads_while_a_writer_is_mid_transaction(traced_db):
 
 
 def test_missing_db_is_friendly_not_crash(tmp_path):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(tmp_path / "absent.db"))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_trace_handler(tmp_path / "absent.db"))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/") as resp:
@@ -162,7 +227,7 @@ def test_missing_db_is_friendly_not_crash(tmp_path):
 def test_db_without_tables_is_friendly(tmp_path):
     db_path = tmp_path / "empty.db"
     db_path.write_bytes(b"")  # exists but has no schema
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(db_path))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_trace_handler(db_path))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/") as resp:
@@ -209,19 +274,12 @@ def test_truncation_marker_reports_omitted_chars(traced_db):
     assert long_request in full_page                   # the run page is untruncated
 
 
-def test_sub_second_phases_get_proportional_bars(traced_db):
-    db_path, run_id = traced_db
-    page, code = render_run(ui_connect(db_path), run_id)
-    assert code == 200
-    assert "width:" in page                            # bars render from real seconds
-
-
 def test_render_error_becomes_a_page_not_a_drop(traced_db, monkeypatch):
-    import factory.ui as ui_module
+    import factory.web.runs as runs_module
 
     db_path, _ = traced_db
-    monkeypatch.setattr(ui_module, "render_index", lambda conn: 1 / 0)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(db_path))
+    monkeypatch.setattr(runs_module, "render_index", lambda conn: 1 / 0)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_trace_handler(db_path))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         try:

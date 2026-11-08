@@ -30,6 +30,7 @@ surface, not the owner's desk.
 | Deployment | Always-on home PC, one user, many repos; access from other devices via SSH tunnel or Tailscale, loopback binding stays | Standard ops (systemd user service); no auth to build while the port never leaves loopback |
 | Run cap | Global cap on simultaneous runs (config), sized to RAM | One-per-repo prevents git collisions, not RAM collisions — the target repos' Chrome E2E suites are the heavy part |
 | Product surface (2026-11-08) | Repo-first navigation; repos discovered from GitHub with clone-on-register; first-run setup UI for tokens | The owner's mental model: enter → see my repos → enter one → see its tasks; onboarding WRITES the same config-as-data files, it does not replace them |
+| Visual surface (2026-11-08) | `factory/web/` package + real `static/` assets, one dark theme, JS fragment polling (no reloads), cards name the live phase, run page as a plain-English timeline, archived as a searchable table | The owner's verdict on the working board was "no me entero de nada" — the factory must read at a glance; structure decided with the owner (see the Phase 9 "board's face" design note) |
 
 ## 3. The shape (what we copy from sssf)
 
@@ -77,7 +78,7 @@ Consolidated from the landscape (Warp, Factory.com, Huntley, MetaGPT, sssf):
 | 6 | **Task board** | `tasks` table (cards: title, prompt, repo, origin owner\|system, status, latest run), roster gains a `repos:` list (path + per-repo test command — the create form offers repos by name, not raw paths), `factory serve` daemon owning execution (stdlib threads; one active run per repo, FIFO per repo, global cap on simultaneous runs), create-task form, kanban view — columns **Backlog / Working / In PR** + separate **Archived** section, card detail = the existing run page | Create a task in the browser and watch it execute without a terminal |
 | 7 | **Web human gates** | `pauses` table (type `questions` \| `plan_approval` \| `pr_approval`; request, answer, status); plan envelope gains `questions` — the card parks with a waiting badge, you answer from the board, the same session resumes; plan approval before build; PR approval before push; CLI keeps the stdin checkpoint | A task cannot pass plan, build-start, or push without a board decision |
 | 8 | **PR delivery + discovered work** | branch per task off the default branch, commit, push, `gh pr create`, PR URL on the card (column In PR; Archived on merge); envelopes gain `discovered` findings that must NOT enter this PR — deterministic code turns them into Backlog cards with `origin_run` provenance | Card lands in In PR with its URL; out-of-scope findings become new cards, never silent scope creep |
-| 9 | **Product surface** | First-run `/setup` onboarding: Z.AI token validated with a real API call, GitHub token validated against the API and used for push/PR, clone base folder — writes `.env` (0600) and the `repos:` section; add-repo flow from `gh repo list` with existing-clone detection or clone-to-path; repo-first navigation (home = repo cards with per-column counts, repo page = its kanban + create form) | A fresh machine reaches a managed repo through the browser alone |
+| 9 | **Product surface** | First-run `/setup` onboarding: Z.AI token validated with a real API call, GitHub token validated against the API and used for push/PR, clone base folder — writes `.env` (0600) and the `repos:` section; add-repo flow from `gh repo list` with existing-clone detection or clone-to-path; repo-first navigation (home = repo cards with per-column counts, repo page = its kanban + create form). The board's face shipped first (2026-11-08): `factory/web/` + static assets, dark theme, live fragment polling, run timeline, searchable archive | A fresh machine reaches a managed repo through the browser alone |
 | 10 | **Scale, when it hurts** | Docker sandbox, external triggers (webhooks/issues), multi-run parallelism per repo, self-improvement, VPS | Unchanged principle: each item enters only when a real need arrives |
 
 Every phase ends in something **runnable**, not something designed.
@@ -528,6 +529,36 @@ GitHub."* What changes:
   stay as they are.
 - **What this is NOT.** No multi-tenancy, no accounts: one owner, localhost.
   Onboarding is convenience, not a security boundary.
+
+### Phase 9 design note — the board's face (added 2026-11-08, shipped first)
+
+The front door needs a legible room behind it: the owner's verdict on the first real
+uses was *"no me entero de nada"* — the board worked but did not read. Decisions
+taken with the owner, now the visual contract:
+
+- **Structure.** Rendering moved out of `board.py`/`ui.py` into a `factory/web/`
+  package (`scaffold` = one page skeleton shared by every page; `kanban` = board,
+  cards, pauses; `runs` = runs index + run timeline) with real assets in
+  `static/` (`style.css`, `app.js`). No frameworks, still stdlib-only; the
+  `factory/ui.py` module is gone.
+- **Dark only.** One theme, CSS variables; semantic colors stay: green = passed/
+  accepted, red = failed, orange = running, blue = waiting on you.
+- **Live without reloads.** No `meta refresh` on JS pages: a `[data-live]` region
+  polls its fragment endpoint (`/fragment/board`, `/fragment/run/{id}`,
+  `/fragment/runs`) every 4s and swaps only on change, keeping open `<details>`
+  open. The page and its fragment render from the same `Board.board_snapshot()`,
+  so they cannot disagree. `<noscript>` keeps a meta-refresh fallback.
+- **Cards say what is happening.** A Working card names its current phase in
+  plain English ("building · 03:24", ticking client-side from a `data-started-epoch`),
+  pauses keep the amber strip ("waiting on you"), and In PR cards state the
+  poller out loud: "auto-archives on merge — checks every 60s".
+- **The run page is a timeline.** One step per phase (icon: done/failed/running/
+  waiting), human labels via a phase-name map (`build:r1` → building,
+  `review:scorer:r2` → reviewing (scorer)), per-step details collapsed (that
+  phase's events, gates, error); the current step is open and pulsing.
+- **Archived is a searchable table**, not a collapsed list (cap raised 50 → 200).
+- **Forms and filters survive refreshes**: the new-task form and the archived
+  table sit outside the polled region.
 
 ## References
 
