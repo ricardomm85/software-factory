@@ -12,9 +12,41 @@ defaults:
 
 # The board (factory serve) offers exactly these repos, by name.
 # test_command is optional per repo and falls back to defaults.test_command.
+#
+# NOTE on parallelism: every scoutbasketball clone currently shares the default
+# docker ports (APP_PORT 3000 / DB_PORT 3001). Keep max_concurrent_runs at 1
+# until each clone pins its own ports in its .env — two concurrent `make up`
+# runs would fight over the same ports.
 repos:
   - name: software-factory
     path: ~/Projects/software-factory
+
+  # scoutbasketball: one GitHub repo, several agent clones (parallel slots).
+  # Same test command everywhere — the suite runs inside each clone's docker.
+  - name: scoutbasketball
+    path: ~/Projects/scoutbasketball-symfony
+    test_command: make test
+  - name: sb-agent21
+    path: ~/Projects/scoutbasketball-agent21
+    test_command: make test
+  - name: sb-agent42
+    path: ~/Projects/scoutbasketball-agent42
+    test_command: make test
+  - name: sb-agent57
+    path: ~/Projects/scoutbasketball-agent57
+    test_command: make test
+  - name: sb-agent62
+    path: ~/Projects/scoutbasketball-agent62
+    test_command: make test
+  - name: sb-agent72
+    path: ~/Projects/scoutbasketball-agent72
+    test_command: make test
+  - name: sb-agent82
+    path: ~/Projects/scoutbasketball-agent82
+    test_command: make test
+  - name: sb-agent92
+    path: ~/Projects/scoutbasketball-agent92
+    test_command: make test
 
 agents:
   - name: scout
