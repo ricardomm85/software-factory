@@ -214,7 +214,8 @@ def test_phase_detail_curates_envelope_and_gates(traced_db):
     conn = connect(db_path)
     run = Run.get(conn, run_id)
     with run.phase(name="build:r2", kind="agent", owner="builder") as phase:
-        phase.log("gate_results", {"diff_matches_claims": {"gate": "diff", "pass": True}})
+        # GateReport.to_payload() contract: {"gate": …, "passed": bool, …}
+        phase.log("gate_results", {"diff_matches_claims": {"gate": "diff_matches_claims", "passed": True}})
         conn.execute(
             "INSERT INTO envelopes (phase_id, attempt, valid, data, created_at)"
             " VALUES (?, 1, 1, ?, '2026-01-01T00:00:00+00:00')",

@@ -162,7 +162,11 @@ def _envelope_line(env) -> str | None:
 
 
 def _gates_line(gate_events) -> str | None:
-    """'gates: diff_matches_claims ✓ · tests_pass ✗' from the gate_results event."""
+    """'gates: diff_matches_claims ✓ · tests_pass ✗' from the gate_results event.
+
+    The payload is GateReport.to_payload(): ``{"gate": …, "passed": bool, …}``
+    keyed by gate name.
+    """
     for e in gate_events:
         try:
             results = json.loads(e["payload"])
@@ -172,7 +176,7 @@ def _gates_line(gate_events) -> str | None:
             continue
         marks = []
         for name, r in sorted(results.items()):
-            ok = bool(isinstance(r, dict) and r.get("pass"))
+            ok = bool(isinstance(r, dict) and r.get("passed"))
             cls = "gate-ok" if ok else "gate-bad"
             marks.append(f"<span class='{cls}'>{esc(name)} {'✓' if ok else '✗'}</span>")
         return "<p class='env'>gates: " + " · ".join(marks) + "</p>"
