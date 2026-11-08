@@ -110,6 +110,14 @@ timeline (one step per phase, details collapsed); archived tasks are a searchabl
 table. Pages poll small fragments every 4s instead of reloading. With JavaScript
 off it falls back to meta-refresh.
 
+## The board's surface
+
+The visual layer is small by design: `factory/web/` renders every page from one shared
+page skeleton — `scaffold` owns that skeleton, `kanban` the board cards and pause pages,
+`runs` the runs index and each run's timeline. There are exactly two real static assets:
+`static/style.css` (one dark theme) and `static/app.js` — fragment polling every 4s, an
+elapsed ticker for running phases, a client-side filter for the archived table.
+
 ## 🧰 The commands
 
 | command | what it does |
