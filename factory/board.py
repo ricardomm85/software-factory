@@ -799,8 +799,11 @@ def _task_card(row, pause=None, run_status: str = "", rerun: bool = False,
             f"<button type='submit'>rerun</button></form></div>"
         )
     if row["pr_url"]:
+        run_link = (
+            f" · <a href='/run/{_esc(row['latest_run'])}'>run</a>" if row["latest_run"] else ""
+        )
         parts.append(
-            f"<div><a href='{_esc(row['pr_url'])}'>PR</a> · auto-archives on merge "
+            f"<div><a href='{_esc(row['pr_url'])}'>PR</a>{run_link} · auto-archives on merge "
             f"<form method='post' action='/tasks/{tid}/archive'>"
             f"<button type='submit'>archive</button></form></div>"
         )
@@ -915,6 +918,7 @@ def render_board(board: Board) -> str:
     )
     rows = "".join(
         f"<li>{_esc(r['title'])}"
+        + (f" — <a href='/run/{_esc(r['latest_run'])}'>run</a>" if r["latest_run"] else "")
         + (f" — <a href='{_esc(r['pr_url'])}'>PR</a>" if r["pr_url"] else "")
         + f" <span class='muted'>{_esc(r['note'])}</span></li>"
         for r in archived

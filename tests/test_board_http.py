@@ -244,6 +244,23 @@ def test_pause_page_renders_plan_and_pr_approvals(server):
     assert board.pause_row(pr_pid)["status"] == "rejected"
 
 
+def test_in_pr_and_archived_cards_link_to_their_run(server):
+    """The trail of a finished task must stay reachable: In PR and Archived
+    cards link to the run page (phases, events, pauses), not just the PR."""
+    board, base = server
+    board.stop()
+    tid = board.create_task("shipped task", "p", str(Path(board.repos[0]["path"])))
+    run = Run.create(board.conn, "plan-build-test: p", agent="a", model="m")
+    board._set_task(tid, status="in_pr", latest_run=run.id, pr_url="http://x/pr/1")
+    code, html = get(f"{base}/")
+    assert f"<a href='/run/{run.id}'>run</a>" in html          # In PR card
+    assert "http://x/pr/1" in html
+    board.archive_task(tid)
+    code, html = get(f"{base}/")
+    assert f"<a href='/run/{run.id}'>run</a>" in html          # Archived entry
+    assert "shipped task" in html
+
+
 def test_pause_page_renders_cleanup_approval(server):
     board, base = server
     board.stop()
