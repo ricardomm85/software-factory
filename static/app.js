@@ -1,8 +1,10 @@
 /* software factory — no frameworks, one small script.
-   Three jobs, all optional per page:
+   Four jobs, all optional per page:
    1. tick every [data-started-epoch] elapsed counter once a second (no fetches);
-   2. filter the archived table as you type (client-side, no fetches);
-   3. poll the [data-live] region's fragment endpoint every 4s and swap it in
+   2. refresh every [data-ts] relative timestamp ("4 min ago") and put the full
+      datetime in its tooltip, in the browser's own timezone;
+   3. filter the archived table as you type (client-side, no fetches);
+   4. poll the [data-live] region's fragment endpoint every 4s and swap it in
       only when the content actually changed — no full reloads, ever. */
 
 (() => {
@@ -27,7 +29,30 @@
   setInterval(tick, 1000);
   tick();
 
-  // 2. archived table filter
+  // 2. relative timestamps — text mirrors the server's format, tooltip localizes
+  const ago = (ts) => {
+    const s = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+    if (s < 45) return "just now";
+    if (s < 90) return "1 min ago";
+    if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+    if (s < 7200) return "1 hour ago";
+    if (s < 86400) return `${Math.floor(s / 3600)} hours ago`;
+    if (s < 172800) return "yesterday";
+    return `${Math.floor(s / 86400)} days ago`;
+  };
+  const tickRel = () => {
+    document.querySelectorAll("[data-ts]").forEach((el) => {
+      const ts = Number(el.dataset.ts);
+      if (ts > 0) {
+        el.textContent = ago(ts);
+        el.title = new Date(ts * 1000).toLocaleString();
+      }
+    });
+  };
+  setInterval(tickRel, 15000);
+  tickRel();
+
+  // 3. archived table filter
   const input = document.querySelector("[data-archive-search]");
   const rows = document.querySelectorAll("#archive-rows tr[data-search]");
   if (input && rows.length) {
@@ -39,7 +64,7 @@
     });
   }
 
-  // 3. live region polling — swap only on change, keep open <details> open
+  // 4. live region polling — swap only on change, keep open <details> open
   const region = document.querySelector("[data-live]");
   if (!region) return;
   let lastHash = "";
@@ -72,6 +97,8 @@
         if (wasOpen.has(d.id)) d.open = true;
       });
     }
+    tick(); // fresh fragment means fresh counters and timestamps
+    tickRel();
   };
   setInterval(poll, 4000);
 })();

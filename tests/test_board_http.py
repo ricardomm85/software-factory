@@ -346,6 +346,7 @@ def test_board_page_has_live_region_and_archive_search(server):
     assert "data-live" in html and "/fragment/board" in html
     assert "auto-archives on merge — checks every 60s" in html  # the poller is visible
     assert "data-archive-search" in html and "filter archived tasks" in html
+    assert "<details class='archive'>" in html         # archived collapses by default
     board.archive_task(t1)
     code, html = get(f"{base}/")
     assert "pr task" in html and "<tr data-search=" in html     # filterable rows

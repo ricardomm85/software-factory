@@ -53,7 +53,7 @@ def test_index_lists_runs_and_escapes_html(traced_db):
     assert run_id in page and "accepted" in page
     assert "&lt;b&gt;bold&lt;/b&gt;" in page          # request text is escaped
     assert "<b>bold</b>" not in page                  # nothing raw survives
-    assert "/tmp/target" in page                      # the repo column shows the target
+    assert ">target<" in page                         # the repo column shows the basename
 
 
 def test_phase_label_map():
@@ -75,10 +75,11 @@ def test_run_page_timeline_errors_and_pi_counts(traced_db):
     assert "<code>build</code>" in page and "<code>review</code>" in page  # raw names stay
     assert "building" in page and "reviewing" in page  # plain-English labels
     assert "RuntimeError: boom: the reviewer exploded" in page  # failure surfaces
-    assert "2 pi stream events" in page               # streaming shown as counts
-    assert "tool_call × 1" in page
+    assert "2 agent stream events" in page            # streaming shown as one honest line
+    assert "tool_call" in page and "1</td>" in page   # the breakdown table is real content
     assert "envelope_ok" in page                      # orchestrator timeline present
     assert "class='tl done'" in page and "class='tl fail'" in page  # step states
+    assert "nothing to show for this phase" not in page  # curated detail always says something
 
 
 def test_open_phase_shows_running_not_failed(traced_db):
@@ -109,7 +110,9 @@ def test_unknown_run_is_404(traced_db):
 
 
 def test_fmt_duration():
-    assert fmt_duration("2026-01-01T00:00:00+00:00", "2026-01-01T00:01:05+00:00") == "65s"
+    assert fmt_duration("2026-01-01T00:00:00+00:00", "2026-01-01T00:01:05+00:00") == "1m 05s"
+    assert fmt_duration("2026-01-01T00:00:00+00:00", "2026-01-01T00:00:43+00:00") == "43s"
+    assert fmt_duration("2026-01-01T00:00:00+00:00", "2026-01-01T01:02:00+00:00") == "1h 02m"
     assert fmt_duration(None, "2026-01-01T00:01:05+00:00") == ""   # still running
     assert fmt_duration("bad", "worse") == ""
 
@@ -187,6 +190,47 @@ def test_live_run_page_polls_a_fragment(traced_db):
     page, code = render_run(ui_connect(db_path), live.id)
     assert code == 200
     assert "data-live" in page and f"/fragment/run/{live.id}" in page
+
+
+def test_relative_timestamps_and_basic_columns(traced_db):
+    """Times read 'x min ago' (JS keeps them fresh and localizes the tooltip);
+    the index carries the basics only — no agent/model/phases/events columns."""
+    db_path, run_id = traced_db
+    page, _ = render_run(ui_connect(db_path), run_id)
+    assert "data-ts=" in page                          # relative timestamps present
+    assert "started <span class='rel'" in page         # the summary line reads human
+    index = render_index(ui_connect(db_path))
+    assert "data-ts=" in index and "<th>took</th>" in index
+    assert "<th>agent</th>" not in index and "<th>model</th>" not in index
+    assert "<th>phases</th>" not in index and "<th>events</th>" not in index
+
+
+def test_phase_detail_curates_envelope_and_gates(traced_db):
+    """Phase detail shows what the phase *meant* — the envelope's own summary and
+    the gate verdicts — not a raw event dump."""
+    import json
+
+    db_path, run_id = traced_db
+    conn = connect(db_path)
+    run = Run.get(conn, run_id)
+    with run.phase(name="build:r2", kind="agent", owner="builder") as phase:
+        phase.log("gate_results", {"diff_matches_claims": {"gate": "diff", "pass": True}})
+        conn.execute(
+            "INSERT INTO envelopes (phase_id, attempt, valid, data, created_at)"
+            " VALUES (?, 1, 1, ?, '2026-01-01T00:00:00+00:00')",
+            (phase.id, json.dumps({
+                "status": "success",
+                "summary": "edited the README",
+                "changed_files": ["README.md"],
+            })),
+        )
+        conn.commit()
+    page, code = render_run(ui_connect(db_path), run_id)
+    assert code == 200
+    assert "✓ edited the README" in page
+    assert "changed 1 file(s)" in page
+    assert "diff_matches_claims ✓" in page             # gates verdict, humanized
+    assert "'attempt'" not in page.split("<h2>events</h2>")[0]  # no raw event dump up top
 
 
 def test_ui_reads_while_a_writer_is_mid_transaction(traced_db):
@@ -269,7 +313,7 @@ def test_truncation_marker_reports_omitted_chars(traced_db):
     long_request = "x" * 200
     live = Run.create(conn, request=long_request, agent="builder", model="m-1")
     page = render_index(ui_connect(db_path))
-    assert f"[+{200 - 96} chars omitted]" in page
+    assert f"[+{200 - 110} chars omitted]" in page   # the request column caps at 110
     full_page, _ = render_run(ui_connect(db_path), live.id)
     assert long_request in full_page                   # the run page is untruncated
 
