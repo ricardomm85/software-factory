@@ -637,6 +637,10 @@ def _review_fix_loop(
     """
     baseline = set(changed_files(repo_dir))
     fixer_allow = baseline | (exempt_paths or set())
+    if max_rounds < 1:
+        # With zero rounds the loop can never accept: fail fast instead of
+        # falling off the end with a synthetic "exhausted" verdict.
+        raise ValueError(f"review max_rounds must be >= 1 (got {max_rounds})")
     for round_no in range(1, max_rounds + 1):
         diff = _working_tree_diff(repo_dir, exempt_paths=exempt_paths, base=diff_base)
         if not diff.strip():
@@ -700,7 +704,7 @@ def _review_fix_loop(
                 violations = _violations(reports)
                 run.log_event(phase.id, "fix_gate_violations", {"violations": violations})
                 fix_prompt = f"{fix_prompt}\n\n{_correction('gate_correction', violations='\\n'.join(violations))}"
-    return False, "review loop exhausted"  # unreachable: every branch returns
+    return False, "review loop exhausted"  # unreachable: guarded max_rounds + every branch returns
 
 
 def run_build_review(
