@@ -1,10 +1,13 @@
-"""Run pages: the runs index and one run's timeline (absorbs the old ui.py).
+"""Run pages: the runs index and one run's timeline.
 
-The run page is a vertical timeline — one step per phase, plain-English
-labels, the current step pulsing and open — with the orchestrator's events
-and pi stream counts collapsed below it. While the run is live the whole
-timeline+events block sits in a ``[data-live]`` region the page's JavaScript
-re-polls (``/fragment/run/{id}``), so watching a run never reloads the page.
+Everything reads like a person wrote it: durations as "6m 35s", timestamps as
+"4 min ago" (kept fresh by app.js, full local datetime in the tooltip), phase
+names as plain-English labels. The runs index carries only the basics — what,
+status, where, when, how long; the run page is a vertical timeline whose
+per-phase detail shows the *meaningful* lines (envelope summary, gate
+results, errors) and hides the raw event plumbing entirely. While the run is
+live the timeline+events block sits in a ``[data-live]`` region the page's
+JavaScript re-polls (``/fragment/run/{id}``), so watching a run never reloads.
 """
 
 import json
@@ -20,7 +23,9 @@ from .scaffold import (
     page,
     phase_label,
     pretty_payload,
+    rel_span,
     short,
+    started_epoch,
     static_asset,
     ui_connect,
 )
@@ -32,17 +37,14 @@ INDEX_LIMIT = 100
 
 
 def list_runs(conn: sqlite3.Connection, limit: int = INDEX_LIMIT):
-    """Recent runs, newest first, with phase and event counts."""
+    """Recent runs, newest first."""
     return conn.execute(
-        "SELECT s.*, (SELECT COUNT(*) FROM phases p WHERE p.run_id = s.id) AS n_phases,"
-        " (SELECT COUNT(*) FROM events e WHERE e.run_id = s.id) AS n_events"
-        " FROM sessions s ORDER BY s.started_at DESC, s.id DESC LIMIT ?",
-        (limit,),
+        "SELECT * FROM sessions s ORDER BY s.started_at DESC, s.id DESC LIMIT ?", (limit,)
     ).fetchall()
 
 
 def run_detail(conn: sqlite3.Connection, run_id: str):
-    """(session, phases, events) for one run, or None if the id is unknown."""
+    """(session, phases, events, envelopes) for one run, or None if unknown."""
     run = conn.execute("SELECT * FROM sessions WHERE id = ?", (run_id,)).fetchone()
     if run is None:
         return None
@@ -52,7 +54,15 @@ def run_detail(conn: sqlite3.Connection, run_id: str):
     events = conn.execute(
         "SELECT * FROM events WHERE run_id = ? ORDER BY id", (run_id,)
     ).fetchall()
-    return run, phases, events
+    try:
+        envelopes = conn.execute(
+            "SELECT e.phase_id, e.attempt, e.valid, e.data FROM envelopes e"
+            " JOIN phases p ON e.phase_id = p.id WHERE p.run_id = ? ORDER BY e.id",
+            (run_id,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        envelopes = []  # legacy dbs have no envelopes table; the UI never migrates
+    return run, phases, events, envelopes
 
 
 def _col(row: sqlite3.Row, key: str, default=""):
@@ -67,26 +77,28 @@ def _col(row: sqlite3.Row, key: str, default=""):
 # --- rendering ----------------------------------------------------------------
 
 
+def _repo_name(path: str) -> str:
+    return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] if path else "-"
+
+
 def _runs_table(rows) -> str:
+    """The basics only: what, status, where, when, how long."""
     body = []
     for r in rows:
+        repo = _col(r, "repo") or ""
         body.append(
             "<tr>"
             f"<td><a href='/run/{esc(r['id'])}'><code>{esc(r['id'])}</code></a></td>"
             f"<td>{badge(r['status'])}</td>"
-            f"<td>{esc(r['agent'] or '-')}</td><td class='muted'>{esc(r['model'] or '-')}</td>"
-            f"<td>{esc(short(r['request']))}</td>"
-            f"<td class='muted'>{esc(short(_col(r, 'repo') or '-', 40))}</td>"
-            f"<td>{r['n_phases']}</td><td>{r['n_events']}</td>"
-            f"<td class='muted'>{esc(r['started_at'])}</td>"
-            f"<td>{esc(fmt_duration(r['started_at'], r['ended_at']))}</td>"
+            f"<td>{esc(short(r['request'], 110))}</td>"
+            f"<td class='muted'>{esc(short(_repo_name(repo), 24))}</td>"
+            f"<td class='muted nowrap'>{rel_span(started_epoch(r['started_at']))}</td>"
+            f"<td class='nowrap'>{esc(fmt_duration(r['started_at'], r['ended_at']))}</td>"
             "</tr>"
         )
     return (
-        "<table><tr><th>run</th><th>status</th><th>agent</th><th>model</th><th>request</th>"
-        "<th>repo</th><th>phases</th><th>events</th><th>started (UTC)</th><th>took</th></tr>"
-        + "".join(body)
-        + "</table>"
+        "<table><tr><th>run</th><th>status</th><th>request</th>"
+        "<th>repo</th><th>started</th><th>took</th></tr>" + "".join(body) + "</table>"
     )
 
 
@@ -120,7 +132,58 @@ def _tl_state(p) -> tuple[str, str]:
     return "fail", p["status"]
 
 
-def _timeline_html(phases, events) -> str:
+def _envelope_line(env) -> str | None:
+    """The one human sentence an envelope carries, plus notable counts."""
+    if env is None:
+        return None
+    try:
+        data = json.loads(env["data"])
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    summary = str(data.get("summary") or "").strip()
+    extras = []
+    if data.get("plan_path"):
+        extras.append(f"plan: {data['plan_path']}")
+    if data.get("changed_files") is not None:
+        extras.append(f"changed {len(data['changed_files'])} file(s)")
+    if isinstance(data.get("questions"), list):
+        extras.append(f"{len(data['questions'])} question(s)")
+    if isinstance(data.get("findings"), list):
+        extras.append(f"{len(data['findings'])} finding(s)")
+    if isinstance(data.get("discovered"), list) and data["discovered"]:
+        extras.append(f"{len(data['discovered'])} discovered item(s)")
+    mark = "✓" if env["valid"] else "✗"
+    line = f"{mark} {esc(summary or 'output parsed')}"
+    if extras:
+        line += f" <span class='muted'>· {' · '.join(esc(e) for e in extras)}</span>"
+    return f"<p class='env'>{line}</p>"
+
+
+def _gates_line(gate_events) -> str | None:
+    """'gates: diff_matches_claims ✓ · tests_pass ✗' from the gate_results event.
+
+    The payload is GateReport.to_payload(): ``{"gate": …, "passed": bool, …}``
+    keyed by gate name.
+    """
+    for e in gate_events:
+        try:
+            results = json.loads(e["payload"])
+        except ValueError:
+            continue
+        if not isinstance(results, dict) or not results:
+            continue
+        marks = []
+        for name, r in sorted(results.items()):
+            ok = bool(isinstance(r, dict) and r.get("passed"))
+            cls = "gate-ok" if ok else "gate-bad"
+            marks.append(f"<span class='{cls}'>{esc(name)} {'✓' if ok else '✗'}</span>")
+        return "<p class='env'>gates: " + " · ".join(marks) + "</p>"
+    return None
+
+
+def _timeline_html(phases, events, envelopes) -> str:
     if not phases:
         return "<h2>timeline</h2><p class='muted'>no phases traced</p>"
     by_phase: dict[int, list] = {}
@@ -128,26 +191,34 @@ def _timeline_html(phases, events) -> str:
         pid = _col(e, "phase_id", None)  # legacy dbs have no events.phase_id at all
         if pid is not None:
             by_phase.setdefault(pid, []).append(e)
+    env_by_phase: dict[int, sqlite3.Row] = {}
+    for env in envelopes:
+        if env["valid"]:
+            env_by_phase[env["phase_id"]] = env  # latest valid attempt wins
     steps = []
     for p in phases:
         state, badge_status = _tl_state(p)
         label = esc(phase_label(p["name"]))
         dur = fmt_duration(p["started_at"], p["ended_at"]) or "…"
-        detail_parts = []
-        pi_here = 0
-        for e in by_phase.get(p["id"], []):
-            if e["type"] == "pi_event":
-                pi_here += 1
-                continue
-            detail_parts.append(
-                f"<div class='muted'>{esc(e['created_at'])} <code>{esc(e['type'])}</code></div>"
-                f"{pretty_payload(e['payload'])}"
+        # Curated detail: what the phase *meant* (envelope summary, gates,
+        # error) — never the raw event dump. Complex stays hidden.
+        here = by_phase.get(p["id"], [])
+        pi_here = sum(1 for e in here if e["type"] == "pi_event")
+        detail_parts = [
+            line
+            for line in (
+                _envelope_line(env_by_phase.get(p["id"])),
+                _gates_line([e for e in here if e["type"] == "gate_results"]),
             )
+            if line
+        ]
         if pi_here:
-            detail_parts.append(f"<p class='muted'>+ {pi_here} pi stream events (see events below)</p>")
+            detail_parts.append(f"<p class='muted'>+ {pi_here} agent stream events (hidden)</p>")
         if p["error"]:
             detail_parts.append(f"<pre>{esc(p['error'])}</pre>")
-        detail = "".join(detail_parts) or "<p class='muted'>nothing recorded in this phase</p>"
+        if not detail_parts:
+            detail_parts.append("<p class='muted'>nothing to show for this phase</p>")
+        detail = "".join(detail_parts)
         open_attr = " open" if state == "running" else ""
         steps.append(
             f"<li class='tl {state}' id='tl-{p['id']}'>"
@@ -164,7 +235,11 @@ def _timeline_html(phases, events) -> str:
 
 
 def _events_html(events) -> str:
-    """Orchestrator decisions as a table, agent streaming as counts."""
+    """Chain decisions as a short table; agent streaming as one collapsible line.
+
+    The pi-stream collapsible really collapses: expanding it shows the
+    per-kind breakdown instead of nothing.
+    """
     pi_counts: dict[str, int] = {}
     timeline = []
     for e in events:
@@ -176,20 +251,26 @@ def _events_html(events) -> str:
             pi_counts[kind] = pi_counts.get(kind, 0) + 1
         else:
             timeline.append(
-                f"<tr><td class='muted'>{esc(e['created_at'])}</td>"
+                f"<tr><td class='muted'>{rel_span(started_epoch(e['created_at']))}</td>"
                 f"<td><code>{esc(e['type'])}</code></td>"
                 f"<td>{pretty_payload(e['payload'])}</td></tr>"
             )
-    pi_summary = (
-        "<details id='pi-events'><summary class='muted'>"
-        f"{sum(pi_counts.values())} pi stream events "
-        f"({', '.join(f'{esc(k)} × {v}' for k, v in sorted(pi_counts.items()))})"
-        "</summary></details>"
-        if pi_counts
-        else ""
-    )
+    if pi_counts:
+        rows = "".join(
+            f"<tr><td class='muted'>{esc(k)}</td><td>{v}</td></tr>"
+            for k, v in sorted(pi_counts.items(), key=lambda kv: -kv[1])
+        )
+        pi_summary = (
+            "<details id='pi-events'><summary class='muted'>"
+            f"{sum(pi_counts.values())} agent stream events — expand for the breakdown"
+            f" ({len(pi_counts)} kinds)</summary>"
+            f"<table class='pi'><tr><th>stream event</th><th>count</th></tr>{rows}</table>"
+            "</details>"
+        )
+    else:
+        pi_summary = ""
     table = (
-        "<table><tr><th>at (UTC)</th><th>type</th><th>payload</th></tr>" + "".join(timeline) + "</table>"
+        "<table><tr><th>when</th><th>type</th><th>payload</th></tr>" + "".join(timeline) + "</table>"
         if timeline
         else "<p class='muted'>no orchestrator events</p>"
     )
@@ -197,23 +278,22 @@ def _events_html(events) -> str:
 
 
 def _run_summary(run) -> str:
+    took = fmt_duration(run["started_at"], run["ended_at"])
     return (
         "<div class='summary'>"
         f"<p><strong>request</strong></p><pre>{esc(run['request'])}</pre>"
-        f"<p>{badge(run['status'])} &nbsp; agent <strong>{esc(run['agent'] or '-')}</strong>"
-        f" · model <span class='muted'>{esc(run['model'] or '-')}</span>"
-        + (
-            f" · repo <code>{esc(short(_col(run, 'repo'), 60))}</code>" if _col(run, "repo") else ""
-        )
-        + f" · started {esc(run['started_at'])} UTC"
-        + (f" · took {fmt_duration(run['started_at'], run['ended_at'])}" if run["ended_at"] else "")
-        + "</p></div>"
+        f"<p>{badge(run['status'])} &nbsp; ran in <strong>{esc(_repo_name(_col(run, 'repo')))}</strong>"
+        f" · started {rel_span(started_epoch(run['started_at']))}"
+        + (f" · took {esc(took)}" if took else "")
+        + (f"<span class='muted'> · agent {esc(run['agent'] or '-')} · model {esc(run['model'] or '-')}"
+           if run["agent"] or run["model"] else "")
+        + "</span></p></div>"
     )
 
 
-def _run_inner(phases, events) -> str:
+def _run_inner(phases, events, envelopes) -> str:
     """Timeline + events: everything below the summary, and the fragment body."""
-    return _timeline_html(phases, events) + _events_html(events)
+    return _timeline_html(phases, events, envelopes) + _events_html(events)
 
 
 def render_run(conn: sqlite3.Connection, run_id: str) -> tuple[str, int]:
@@ -221,8 +301,8 @@ def render_run(conn: sqlite3.Connection, run_id: str) -> tuple[str, int]:
     detail = run_detail(conn, run_id)
     if detail is None:
         return page("unknown run", f"<p>No run with id <code>{esc(run_id)}</code>.</p>"), 404
-    run, phases, events = detail
-    inner = _run_inner(phases, events)
+    run, phases, events, envelopes = detail
+    inner = _run_inner(phases, events, envelopes)
     live = run["status"] == "running"
     body = _run_summary(run) + (
         f"<div data-live data-fragment-src='/fragment/run/{esc(run_id)}'>{inner}</div>"
@@ -237,8 +317,8 @@ def render_run_fragment(conn: sqlite3.Connection, run_id: str) -> tuple[str, int
     detail = run_detail(conn, run_id)
     if detail is None:
         return f"<p>No run with id <code>{esc(run_id)}</code>.</p>", 404
-    run, phases, events = detail
-    return _run_inner(phases, events), 200
+    run, phases, events, envelopes = detail
+    return _run_inner(phases, events, envelopes), 200
 
 
 # --- http server (the standalone `factory ui` trace viewer) --------------------

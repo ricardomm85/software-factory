@@ -559,6 +559,14 @@ taken with the owner, now the visual contract:
 - **Archived is a searchable table**, not a collapsed list (cap raised 50 → 200).
 - **Forms and filters survive refreshes**: the new-task form and the archived
   table sit outside the polled region.
+- **Second pass from the owner's first real session (2026-11-08, #14):** archived
+  collapses by default; the runs index carries only the basics; timestamps are
+  relative ("4 min ago") with the full local datetime in the tooltip; durations
+  are human ("6m 35s"); phase detail shows the phase's *meaning* (envelope
+  summary, gate verdicts, error) instead of raw event dumps; the agent-stream
+  counter finally collapses for real (per-kind breakdown). Lesson: gate verdicts
+  must read `GateReport.to_payload()`'s real key (`passed`) — a display that
+  shows ✗ on a passing phase is worse than no display.
 
 ## References
 

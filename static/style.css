@@ -213,3 +213,22 @@ textarea:focus, input:focus, select:focus, button:focus-visible {
 details > summary { cursor: pointer; }
 details > summary:hover { color: var(--head); }
 details[open] > summary { margin-bottom: .3rem; }
+
+/* --- archived section (collapsed by default) ---------------------------------- */
+
+details.archive > summary {
+  font-size: .95rem;
+  font-weight: 600;
+  color: var(--head);
+  margin: 1.4rem 0 .4rem;
+}
+details.archive[open] > summary { margin-bottom: .6rem; }
+
+/* --- relative timestamps & curated phase detail -------------------------------- */
+
+.rel { font-variant-numeric: tabular-nums; }
+.nowrap { white-space: nowrap; }
+.env { margin: .2rem 0; font-size: .8rem; }
+.gate-ok { color: var(--green); }
+.gate-bad { color: var(--red); font-weight: 600; }
+table.pi { max-width: 28rem; }

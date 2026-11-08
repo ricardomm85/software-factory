@@ -9,7 +9,17 @@ escape hatch for claimed cards whose run never got created.
 
 import json
 
-from .scaffold import ARCHIVE_SEARCH_HINT, badge, esc, fmt_elapsed, page, short, ui_connect
+from .scaffold import (
+    ARCHIVE_SEARCH_HINT,
+    badge,
+    esc,
+    fmt_elapsed,
+    page,
+    rel_span,
+    short,
+    started_epoch,
+    ui_connect,
+)
 
 
 def _pause_headline(pause: dict) -> str:
@@ -129,13 +139,13 @@ def _archived_section(snap: dict) -> str:
             f"<td>{esc(t['title'])}</td>"
             f"<td class='muted'>{esc(t['repo_name'])}</td>"
             f"<td class='muted'>{esc(short(t['note'], 120))}</td>"
-            f"<td class='muted'>{esc(t['updated_at'])}</td>"
+            f"<td class='muted'>{rel_span(started_epoch(t['updated_at']))}</td>"
             f"<td>{run_link}</td><td>{pr_link}</td></tr>"
         )
     if rows:
         table = (
             "<table><tr><th>task</th><th>repo</th><th>result</th>"
-            "<th>archived (UTC)</th><th>run</th><th>PR</th></tr>"
+            "<th>archived</th><th>run</th><th>PR</th></tr>"
             # the tbody id is the JS filter's handle (app.js reads #archive-rows)
             f"<tbody id='archive-rows'>" + "".join(rows) + "</tbody></table>"
         )
@@ -144,11 +154,12 @@ def _archived_section(snap: dict) -> str:
     total = snap["archived_total"]
     shown = len(snap["archived"])
     extra = f" <span class='muted'>(showing {shown} of {total})</span>" if total > shown else ""
+    # Collapsed by default: finished work must not push the live board down.
     return (
-        f"<section class='archive'><h2>Archived <span class='muted'>({total})</span>{extra}</h2>"
+        f"<details class='archive'><summary>Archived <span class='muted'>({total})</span>{extra}</summary>"
         f"<div class='tools'>"
         f"<input type='search' data-archive-search placeholder='{ARCHIVE_SEARCH_HINT}'></div>"
-        f"{table}</section>"
+        f"{table}</details>"
     )
 
 
@@ -213,7 +224,10 @@ def render_pause(board, pause_id: str) -> tuple[str, int]:
         f" · run <a href='/run/{esc(row['run_id'])}'><code>{esc(row['run_id'])}</code></a>"
         if row["run_id"] else ""
     )
-    head = f"<p>task <code>{esc(row['task_id'])}</code>{run_link} · opened {esc(row['created_at'])} UTC</p>"
+    head = (
+        f"<p>task <code>{esc(row['task_id'])}</code>{run_link} · "
+        f"opened {rel_span(started_epoch(row['created_at']))}</p>"
+    )
 
     if row["status"] != "waiting":
         body = (

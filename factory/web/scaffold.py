@@ -10,6 +10,7 @@ own the HTTP plumbing that wraps them.
 import html
 import json
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -103,8 +104,49 @@ def duration_seconds(started_at, ended_at) -> float | None:
 
 def fmt_duration(started_at, ended_at) -> str:
     """Human duration between two ISO timestamps; '' when either is missing."""
-    secs = duration_seconds(started_at, ended_at)
-    return f"{secs:.0f}s" if secs is not None else ""
+    return fmt_secs(duration_seconds(started_at, ended_at))
+
+
+def fmt_secs(secs: float | None) -> str:
+    """Seconds the way a person says them: 43s · 6m 35s · 1h 02m."""
+    if secs is None:
+        return ""
+    total = max(0, int(secs))
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m {total % 60:02d}s"
+    return f"{total // 3600}h {(total % 3600) // 60:02d}m"
+
+
+def rel_text(epoch: int, now: int | None = None) -> str:
+    """How long ago an epoch was, the way a person says it."""
+    if epoch <= 0:
+        return "?"
+    ago = max(0, (now if now is not None else int(time.time())) - epoch)
+    if ago < 45:
+        return "just now"
+    if ago < 90:
+        return "1 min ago"
+    if ago < 3600:
+        return f"{ago // 60} min ago"
+    if ago < 7200:
+        return "1 hour ago"
+    if ago < 86400:
+        return f"{ago // 3600} hours ago"
+    if ago < 172800:
+        return "yesterday"
+    return f"{ago // 86400} days ago"
+
+
+def rel_span(epoch: int) -> str:
+    """A timestamp that reads like a person wrote it, kept fresh by app.js.
+
+    The server renders the initial text; the browser's JavaScript refreshes it
+    in place and fills the title tooltip with the full datetime in the
+    browser's own timezone (the server has no way to know it).
+    """
+    return f"<span class='rel' data-ts='{int(epoch)}'>{rel_text(epoch)}</span>"
 
 
 def fmt_elapsed(secs: int) -> str:
