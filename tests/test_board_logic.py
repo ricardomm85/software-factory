@@ -383,25 +383,27 @@ def test_reaper_settles_orphaned_runs_and_expires_pauses(tmp_path):
     assert "rerun" in board._task(task)["note"]
 
 
-def test_reaper_restores_the_worktree_of_orphaned_runs(tmp_path):
-    """A run the daemon died in left uncommitted debris too — the rerun its card
-    advertises must not hit the dirty-tree wall at preflight."""
+def test_reaper_leaves_orphaned_worktrees_alone(tmp_path):
+    """Post-crash dirt is unattributable — the dead run's debris and the
+    owner's uncommitted edits look identical — so the reaper never restores;
+    the card tells the owner to review the tree, and the rerun's preflight
+    refuses until it is clean."""
     board = make_board(tmp_path, cap=1)
     board.stop()
     repo = Path(repo_path(board, "alpha"))
-    (repo / "crash.txt").write_text("debris from a dead daemon\n")
+    (repo / "maybe-owner-wip.txt").write_text("unattributable\n")
     run = Run.create(board.conn, "plan-build-test: ghost", agent="a", model="m",
                      repo=str(repo), launched_by="board")
     board.conn.commit()
     task = board.create_task("ghost card", "p", str(repo))
     board._set_task(task, status="working", latest_run=run.id)
 
-    board.start()  # start() reaps — and restores the roster repo it reaped
+    board.start()  # start() reaps
     board.stop()
     assert "rerun" in board._task(task)["note"]
     status = subprocess.run(["git", "status", "--porcelain"], cwd=str(repo),
                             capture_output=True, text=True, check=True).stdout
-    assert status.strip() == ""
+    assert "maybe-owner-wip.txt" in status  # untouched: could be the owner's WIP
 
 
 def test_reaper_leaves_foreign_running_sessions_alone(tmp_path):
@@ -556,7 +558,7 @@ def test_stop_expires_open_pauses_and_workers_unwind(tmp_path):
     board.start()
     started.wait(timeout=5)
     board.stop()
-    wait_until(lambda: not board._workers)
+    assert not board._workers  # stop() joins workers: no post-close db races
     assert seen["status"] == "expired"
     status = board.conn.execute("SELECT status FROM pauses").fetchone()["status"]
     assert status == "expired"

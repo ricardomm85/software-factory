@@ -336,15 +336,28 @@ def run_plan_build_test(
             run.finish(accepted=False, reason=reason)
             return False, reason
 
-        # Gate the planner's work exactly like the builder's: the plan file must
-        # exist and be claimed, and nothing unclaimed survives (rolled back).
+        # Gate the planner's work exactly like the builder's — on every path.
+        # The plan file must exist and be claimed, and nothing unclaimed
+        # survives (rolled back): the no-plan early exit below runs the same
+        # gates so the Phase 2 rollback guarantee holds even when the planner
+        # wrote debris and then reported questions instead.
         plan_rel = plan_envelope.plan_path or (plan_envelope.artifacts[0] if plan_envelope.artifacts else "")
         if plan_envelope.status == "success" and not plan_rel:
             # "Success" without a plan file is a planner that either still asks
             # questions or reports an empty success — either way the builder has
-            # nothing honest to implement. Failing vacuously through empty-claim
-            # gates would be theater. The two question cases get honest causes:
-            # nobody wired to answer, or the human-rounds bound exhausted.
+            # nothing honest to implement. The gates still run (empty claims =
+            # everything the planner wrote is debris and gets rolled back), so
+            # the CLI path — which has no board worktree-restore net — keeps the
+            # writes boundary. The two question cases get honest causes: nobody
+            # wired to answer, or the human-rounds bound exhausted.
+            with run.phase("plan_gates", kind="code", owner="code") as phase:
+                empty_claim = BuildOutput(status="success", summary=plan_envelope.summary)
+                reports = [
+                    run_output_gate(empty_claim),
+                    artifacts_exist(empty_claim, repo_dir),
+                    diff_matches_claims(empty_claim, repo_dir, rollback=True, allow=exempt_paths),
+                ]
+                phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
             if plan_envelope.questions:
                 reason = (
                     "planner returned questions but no one is wired to answer them"

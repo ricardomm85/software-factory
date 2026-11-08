@@ -114,6 +114,26 @@ def test_questions_with_nobody_attached_fail_the_plan_gates(repo, tmp_path):
     assert len(agent.calls) == 1  # nobody to answer: one call, honest failure
 
 
+def test_questions_without_anyone_wired_rolls_back_planner_debris(repo, tmp_path):
+    """The no-plan early exit still runs the gates' rollback: the planner's
+    unclaimed files must not survive on the CLI path — it has no board
+    worktree-restore net (Phase 2 invariant, every path)."""
+    def write_debris(repo_dir: Path):
+        (repo_dir / "rogue.txt").write_text("planner debris\n")
+
+    agent = StubAgent([QUESTIONS_JSON], side_effects=[write_debris])
+    tests = StubTests([])
+    conn = connect(tmp_path / "factory.db")
+    accepted, reason = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=agent, test_fn=tests,  # no questions_fn: the CLI
+    )
+    assert not accepted
+    assert "no one is wired to answer" in reason
+    assert not (repo / "rogue.txt").exists()          # rolled back by the gates
+    assert "plan_gates" in _phases(conn)              # they ran on the early exit
+
+
 def test_plan_approval_approved(repo, tmp_path):
     agent = StubAgent([PLAN_JSON, BUILD_JSON], side_effects=[write_plan, write_feature])
     tests = StubTests([0])

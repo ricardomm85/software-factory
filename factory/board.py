@@ -336,8 +336,11 @@ class Board:
         board put them there, so the board removes them (deterministic git, the
         same writes boundary the gates enforce): tracked files reset to the task
         branch tip, untracked debris cleaned. The trace db (exempt paths) never
-        counts as debris; the owner's WIP is safe because a run never starts on
-        a dirty tree (preflight). Returns '' or why the restore failed.
+        counts as debris. Called ONLY from _execute's failure paths, where the
+        board dirtied the tree itself and a run never starts on a dirty tree
+        (preflight) — never from reap_orphans, where post-crash dirt is
+        unattributable and could be the owner's WIP. Returns '' or why the
+        restore failed.
         """
         reset = _git("reset", "--hard", "-q", repo_dir=repo_dir)
         clean_args = ["clean", "-fd"]
@@ -570,6 +573,12 @@ class Board:
         # orphaned pi children burning tokens after the board is gone, and each
         # chain unwinds to a settled (failed) run row.
         kill_live_agents()
+        # Wait for the workers to finish unwinding BEFORE the caller closes the
+        # shared connection — their settlement writes (run.finish, task notes,
+        # worktree restore) must not race a closed db. Killed agents return
+        # promptly; a wedged worker is left to the startup reaper.
+        for t in list(self._workers.values()):
+            t.join(timeout=15)
         for t in self._threads:
             t.join(timeout=5)
 
@@ -630,19 +639,13 @@ class Board:
                 (_now(),),
             )
             self.conn.commit()
-        if orphans:
-            # A run the daemon died in left uncommitted debris too — restore its
-            # worktree like any failed run, or the rerun it advertises hits the
-            # dirty-tree wall. Roster repos only, best-effort, at startup.
-            marks = ",".join("?" for _ in orphans)
-            known = {r["path"] for r in self.repos}
-            dead = self.conn.execute(
-                f"SELECT DISTINCT repo FROM sessions WHERE id IN ({marks})", orphans
-            ).fetchall()
-            for r in dead:
-                repo_dir = Path(r["repo"]) if r["repo"] else None
-                if repo_dir is not None and repo_dir in known and repo_dir.is_dir():
-                    self._restore_worktree(repo_dir, trace_exemptions(repo_dir, self.db_path))
+        # Deliberately NO worktree restore for orphaned runs: after a daemon
+        # death the dirt in a roster repo is unattributable — the dead run's
+        # debris and the owner's uncommitted edits look identical. Restoring
+        # would silently destroy owner WIP; instead the cards tell the owner to
+        # review the tree, and the rerun's preflight refuses until it is clean.
+        # Only the board's OWN failed/declined runs auto-restore (in _execute),
+        # because there the board dirtied the tree itself.
 
     # -- PR merge polling ---------------------------------------------------------
 
