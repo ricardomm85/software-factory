@@ -92,8 +92,8 @@ def _runs_table(rows) -> str:
             f"<td>{badge(r['status'])}</td>"
             f"<td>{esc(short(r['request'], 110))}</td>"
             f"<td class='muted'>{esc(short(_repo_name(repo), 24))}</td>"
-            f"<td class='muted'>{rel_span(started_epoch(r['started_at']))}</td>"
-            f"<td>{esc(fmt_duration(r['started_at'], r['ended_at']))}</td>"
+            f"<td class='muted nowrap'>{rel_span(started_epoch(r['started_at']))}</td>"
+            f"<td class='nowrap'>{esc(fmt_duration(r['started_at'], r['ended_at']))}</td>"
             "</tr>"
         )
     return (

@@ -227,6 +227,7 @@ details.archive[open] > summary { margin-bottom: .6rem; }
 /* --- relative timestamps & curated phase detail -------------------------------- */
 
 .rel { font-variant-numeric: tabular-nums; }
+.nowrap { white-space: nowrap; }
 .env { margin: .2rem 0; font-size: .8rem; }
 .gate-ok { color: var(--green); }
 .gate-bad { color: var(--red); font-weight: 600; }
