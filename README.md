@@ -102,6 +102,14 @@ cards in a local kanban, answer the factory's questions, and approve the PR push
 $ factory serve          →  the board at http://127.0.0.1:8666
 ```
 
+The board is a dark, framework-free UI that reads at a glance: a Working card
+names the phase it is in right now ("building · 03:24") and pulses; parked
+cards show a blue "waiting on you" strip with one click to decide; In PR cards
+say "auto-archives on merge — checks every 60s"; the run page is a plain-English
+timeline (one step per phase, details collapsed); archived tasks are a searchable
+table. Pages poll small fragments every 4s instead of reloading. With JavaScript
+off it falls back to meta-refresh.
+
 ## 🧰 The commands
 
 | command | what it does |
@@ -110,7 +118,7 @@ $ factory serve          →  the board at http://127.0.0.1:8666
 | `factory build-test "<prompt>"` | builder + tests with a bounded fix loop |
 | `factory plan-build-test "<prompt>"` | the standard chain: plan → gates → handoff → build/test → **checkpoint** → commit |
 | `factory build-review` | multi-lens review of your working tree: 2 lenses → scorer → **gate ≥50 blocks** → fixer rounds |
-| `factory ui` | read-only web UI over the trace — live waterfall per phase |
+| `factory ui` | read-only web UI over the trace — live run timeline per phase |
 | `factory sessions` / `factory phases <id>` | read the trace from your terminal |
 | `factory --repo <path> …` | point any command at another repo — one roster, one trace |
 

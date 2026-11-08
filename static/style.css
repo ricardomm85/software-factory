@@ -1,0 +1,215 @@
+/* software factory — one dark theme, no frameworks.
+   Palette: near-black page, panel surfaces, semantic accent colors
+   (green = passed/accepted, red = failed, orange = running, blue = waiting on you). */
+
+:root {
+  --bg: #121417;
+  --panel: #1a1e24;
+  --card: #20252d;
+  --card-soft: #1d222a;
+  --line: #2b323b;
+  --text: #d6dae1;
+  --head: #eef1f5;
+  --muted: #8b939e;
+  --blue: #5b9cff;
+  --green: #43b65c;
+  --red: #ef5350;
+  --orange: #ef8e3c;
+  --amber: #d9a62e;
+  --gray: #5c6570;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, sans-serif;
+  margin: 0 auto;
+  max-width: 72rem;
+  padding: 0 1rem 2rem;
+  color: var(--text);
+  background: var(--bg);
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 1.2rem;
+  border-bottom: 1px solid var(--line);
+  padding: 1rem 0 .6rem;
+}
+
+h1 { font-size: 1.15rem; margin: 0; color: var(--head); letter-spacing: .02em; }
+h2 { font-size: .95rem; margin: 1.2rem 0 .5rem; color: var(--head); }
+
+nav a { color: var(--blue); text-decoration: none; }
+nav a:hover { text-decoration: underline; }
+
+footer.muted { margin-top: 2rem; border-top: 1px solid var(--line); padding-top: .6rem; }
+
+a { color: var(--blue); }
+code { font-size: .85em; background: var(--card-soft); border: 1px solid var(--line); border-radius: 3px; padding: 0 .25rem; }
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: .15rem 0;
+  font-size: .78rem;
+  background: var(--card-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  padding: .4rem .5rem;
+}
+
+.muted { color: var(--muted); font-size: .78rem; }
+
+/* --- tables ----------------------------------------------------------------- */
+
+table { border-collapse: collapse; width: 100%; font-size: .85rem; margin: .4rem 0; }
+th, td { border-bottom: 1px solid var(--line); padding: .35rem .5rem; text-align: left; vertical-align: top; }
+th { color: var(--muted); text-transform: uppercase; font-size: .68rem; letter-spacing: .05em; }
+
+/* --- badges ----------------------------------------------------------------- */
+
+.badge {
+  display: inline-block;
+  padding: .1rem .5rem;
+  border-radius: .6rem;
+  font-size: .72rem;
+  color: #fff;
+  white-space: nowrap;
+}
+.badge.pass, .badge.accepted { background: var(--green); }
+.badge.fail, .badge.failed { background: var(--red); }
+.badge.running { background: var(--orange); }
+.badge.waiting { background: var(--blue); }
+.badge.system, .badge.backlog, .badge.expired, .badge.rejected { background: var(--gray); }
+
+/* --- summary / callout boxes -------------------------------------------------- */
+
+.summary {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: .8rem;
+  margin: .6rem 0;
+  font-size: .9rem;
+}
+
+/* --- kanban board ------------------------------------------------------------ */
+
+.board { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
+.col {
+  flex: 1;
+  min-width: 15rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: .6rem;
+}
+.col h2 { margin: .1rem 0 .5rem; }
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: .55rem;
+  margin: .45rem 0;
+  font-size: .85rem;
+  background: var(--card);
+}
+.card .title { font-weight: 600; color: var(--head); }
+.card .meta { margin-top: .15rem; }
+.card form { display: inline; margin: 0; }
+
+.strip { margin-top: .4rem; display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.strip.wait {
+  border-left: 3px solid var(--blue);
+  background: rgba(91, 156, 255, .08);
+  padding: .3rem .45rem;
+  border-radius: 0 4px 4px 0;
+}
+.strip.live { color: var(--head); }
+
+.pulse {
+  width: .55rem;
+  height: .55rem;
+  border-radius: 50%;
+  background: var(--orange);
+  animation: pulse 1.4s ease-in-out infinite;
+  flex: none;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+.elapsed { font-variant-numeric: tabular-nums; color: var(--orange); }
+
+/* --- forms ------------------------------------------------------------------- */
+
+button {
+  font-size: .75rem;
+  padding: .2rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--card-soft);
+  color: var(--text);
+  cursor: pointer;
+}
+button:hover { border-color: var(--muted); color: var(--head); }
+textarea, input[type=text], input[type=search], select {
+  font-size: .8rem;
+  width: 100%;
+  color: var(--text);
+  background: var(--card-soft);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: .25rem .4rem;
+  margin: .15rem 0;
+}
+textarea:focus, input:focus, select:focus, button:focus-visible {
+  outline: 1px solid var(--blue);
+  outline-offset: 1px;
+}
+
+.newtask {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: .6rem .8rem;
+  margin: .6rem 0;
+  font-size: .85rem;
+}
+
+/* --- archived section ---------------------------------------------------------- */
+
+.archive { margin-top: 1.4rem; }
+.archive .tools { display: flex; align-items: baseline; gap: .8rem; }
+.archive .tools input[type=search] { max-width: 20rem; }
+#archive-rows tr[hidden] { display: none; }
+
+/* --- run timeline --------------------------------------------------------------- */
+
+.timeline { list-style: none; margin: .4rem 0; padding: 0; }
+.tl { display: flex; gap: .6rem; }
+.tl-rail { display: flex; flex-direction: column; align-items: center; width: .9rem; flex: none; }
+.tl-rail::before { content: ""; flex: 1; width: 2px; background: var(--line); }
+.tl:first-child .tl-rail::before { visibility: hidden; }
+.tl-dot {
+  width: .7rem;
+  height: .7rem;
+  border-radius: 50%;
+  margin: .3rem 0;
+  flex: none;
+  background: var(--gray);
+}
+.tl.done .tl-dot { background: var(--green); }
+.tl.fail .tl-dot { background: var(--red); }
+.tl.running .tl-dot { background: var(--orange); animation: pulse 1.4s ease-in-out infinite; }
+.tl.waiting .tl-dot { background: var(--blue); }
+
+.tl-main { flex: 1; border-bottom: 1px solid var(--line-soft); padding: .25rem 0 .45rem; }
+.tl-head { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; }
+.tl-label { font-weight: 600; color: var(--head); }
+.tl.running .tl-label { color: var(--orange); }
+.tl.waiting .tl-label { color: var(--blue); }
+.tl.fail .tl-label { color: var(--red); }
+
+details > summary { cursor: pointer; }
+details > summary:hover { color: var(--head); }
+details[open] > summary { margin-bottom: .3rem; }

@@ -299,3 +299,82 @@ def test_run_detail_still_served_by_the_board(server):
     assert code == 200 and "board run" in html
     code, html = get(f"{base}/runs")
     assert code == 200 and "board run" in html
+
+
+# --- visual overhaul: static assets, fragments, live cards --------------------
+
+
+def test_static_assets_served_by_the_board(server):
+    board, base = server
+    board.stop()
+    with urllib.request.urlopen(f"{base}/static/style.css", timeout=5) as res:
+        assert res.status == 200 and res.headers["Content-Type"].startswith("text/css")
+        assert "--bg" in res.read().decode()               # the dark palette variables
+    with urllib.request.urlopen(f"{base}/static/app.js", timeout=5) as res:
+        assert res.status == 200
+        assert res.headers["Content-Type"].startswith("text/javascript")
+    code, html = get(f"{base}/static/nope.css")
+    assert code == 404
+
+
+def test_board_serves_fragments(server):
+    board, base = server
+    board.stop()
+    code, frag = get(f"{base}/fragment/board")
+    assert code == 200
+    for name in ("Backlog", "Working", "In PR"):
+        assert name in frag
+    assert "<!doctype" not in frag                     # a bare payload, not a page
+    code, frag = get(f"{base}/fragment/runs")
+    assert code == 200 and "<table>" in frag
+    run = Run.create(board.conn, "board run", agent="a", model="m")
+    code, frag = get(f"{base}/fragment/run/{run.id}")
+    assert code == 200 and "timeline" in frag
+    code, frag = get(f"{base}/fragment/run/nope")
+    assert code == 404
+
+
+def test_board_page_has_live_region_and_archive_search(server):
+    board, base = server
+    board.stop()
+    t1 = board.create_task("pr task", "p", str(Path(board.repos[0]["path"])))
+    run = Run.create(board.conn, "p", agent="a", model="m")
+    board._set_task(t1, status="in_pr", latest_run=run.id, pr_url="http://x/pr/9")
+    t2 = board.create_task("working task", "p", str(Path(board.repos[0]["path"])))
+    board._set_task(t2, status="working")
+    code, html = get(f"{base}/")
+    assert "data-live" in html and "/fragment/board" in html
+    assert "auto-archives on merge — checks every 60s" in html  # the poller is visible
+    assert "data-archive-search" in html and "filter archived tasks" in html
+    board.archive_task(t1)
+    code, html = get(f"{base}/")
+    assert "pr task" in html and "<tr data-search=" in html     # filterable rows
+
+
+def test_working_card_shows_the_live_phase(server):
+    """A working card names the phase it is in right now, with an epoch the
+    page's JS can tick from — not just a bare running badge."""
+    from datetime import datetime, timezone
+
+    board, base = server
+    board.stop()
+    tid = board.create_task("live phase", "p", str(Path(board.repos[0]["path"])))
+    run = Run.create(board.conn, "plan-build-test: p", agent="a", model="m")
+    board._set_task(tid, status="working", latest_run=run.id)
+    board.conn.execute(
+        "INSERT INTO phases (run_id, seq, name, kind, owner, status, started_at)"
+        " VALUES (?, 1, 'build:r1', 'agent', 'builder', 'fail', ?)",
+        (run.id, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+    )
+    board.conn.commit()
+
+    snap = board.board_snapshot()
+    card = snap["working"][0]
+    assert card["phase"] is not None
+    assert card["phase"]["label"] == "building"
+    assert card["phase"]["started_epoch"] > 0
+    assert snap["live"] is True
+
+    code, html = get(f"{base}/")
+    assert "building" in html and "data-started-epoch" in html
+    assert "watch run" in html and f"/run/{run.id}" in html
