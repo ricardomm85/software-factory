@@ -4,7 +4,7 @@ Commands:
   factory run "<prompt>"        one agent phase inside a traced run (the spine)
   factory build-test "<prompt>" builder + code(test) with a bounded fix loop (gates + rollback)
   factory build-review          multi-lens review of the working-tree changes (gates + fix rounds)
-  factory ui                    read-only local web UI over the trace (runs, phase waterfall)
+  factory ui                    read-only local web UI over the trace (runs, run timeline)
   factory serve                 the board: create tasks, watch runs, answer pauses (loopback)
   factory sessions              list traced runs
   factory phases <run_id>       list phases of one run
@@ -22,7 +22,7 @@ from .config import ConfigError, load_config, resolve_agent
 from .db import connect, trace_exemptions as _trace_exemptions
 from .envelope import RunOutput
 from .run import AgentPhaseError, Run, call_agent
-from .ui import fmt_duration, make_server
+from .web.runs import fmt_duration, make_trace_server
 
 
 def _load_config(path: Path) -> dict:
@@ -235,7 +235,7 @@ def cmd_ui(args) -> int:
         print(f"invalid port {args.port}: must be 1-65535", file=sys.stderr)
         return 2
     try:
-        server = make_server(db_path, args.port)
+        server = make_trace_server(db_path, args.port)
     except OSError as exc:
         print(f"cannot serve on port {args.port}: {exc}", file=sys.stderr)
         return 2

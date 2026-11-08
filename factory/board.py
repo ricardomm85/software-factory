@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,19 +42,11 @@ from .chains import CheckpointDeclined, _git, _pending_changes_summary, run_plan
 from .config import resolve_agent, resolve_repos
 from .db import trace_exemptions
 from .envelope import extract_json
-from .ui import (
-    REFRESH_S,
-    _CSS,
-    _badge,
-    _esc,
-    _short,
-    render_index,
-    render_run,
-    ui_connect,
-)
+from .web import kanban, runs
+from .web.scaffold import esc, page, phase_label, started_epoch, static_asset, ui_connect
 
 FORM_CAP = 1_000_000  # max bytes of a POST body — a form, not an upload endpoint
-ARCHIVED_LIMIT = 50
+ARCHIVED_LIMIT = 200
 
 
 def _now() -> str:
@@ -706,342 +699,131 @@ class Board:
             except Exception as exc:  # gh hiccups must not kill the poller
                 print(f"pr poll error: {type(exc).__name__}: {exc}", file=sys.stderr)
 
+    # -- board snapshot -------------------------------------------------------
 
-# --- rendering ---------------------------------------------------------------
+    def board_snapshot(self) -> dict:
+        """Everything the kanban page renders, computed once per request.
 
-
-_BOARD_CSS = """
-.board{display:flex;gap:1rem;align-items:flex-start;flex-wrap:wrap}
-.col{flex:1;min-width:15rem;background:#fff;border:1px solid #ddd;border-radius:6px;padding:.6rem}
-.col h2{margin:.1rem 0 .5rem}
-.card{border:1px solid #e3e3e3;border-radius:4px;padding:.5rem;margin:.4rem 0;font-size:.85rem;background:#fafafa}
-.card .title{font-weight:600}
-.card form{display:inline;margin:0}
-.badge.waiting{background:#1565c0}
-.badge.system{background:#616161}
-.badge.backlog{background:#555}
-button{font-size:.75rem;padding:.15rem .5rem;border:1px solid #bbb;border-radius:4px;background:#fff;cursor:pointer}
-textarea,input[type=text],select{font-size:.8rem;width:100%;box-sizing:border-box;margin:.15rem 0}
-.newtask{background:#fff;border:1px solid #ddd;border-radius:6px;padding:.6rem .8rem;margin:.6rem 0;font-size:.85rem}
-"""
-
-
-def _board_page(title: str, body: str, refresh: bool = False) -> str:
-    meta = f'<meta http-equiv="refresh" content="{REFRESH_S}">' if refresh else ""
-    return (
-        f"<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">{meta}\n"
-        f"<title>{_esc(title)}</title><style>{_CSS}{_BOARD_CSS}</style></head><body>\n"
-        f"<h1>factory board</h1>\n"
-        f"<nav><a href='/'>tasks</a> · <a href='/runs'>runs</a></nav>\n{body}\n"
-        f"<p class='muted'>loopback only · one run per repo · refreshes every {REFRESH_S}s while cards are live</p>\n"
-        f"</body></html>\n"
-    )
-
-
-def _pause_headline(pause) -> str:
-    try:
-        req = json.loads(pause["request"])
-    except ValueError:
-        req = {}
-    if pause["type"] == "questions":
-        n = len(req.get("questions") or [])
-        return f"{n} question{'s' if n != 1 else ''}"
-    if pause["type"] == "plan_approval":
-        return f"plan: {req.get('plan_path') or 'unwritten'}"
-    if pause["type"] == "cleanup_approval":
-        return "worktree has this run's edits"
-    return "approve the PR push"
-
-
-def _task_card(row, pause=None, run_status: str = "", rerun: bool = False,
-               position: int = 0) -> str:
-    """One kanban card. Every agent-produced string passes through _esc.
-
-    ``rerun`` is the escape hatch for cards whose run never got created
-    (preflight/fetch/branch failures leave ``latest_run`` empty): without it
-    such a card would sit in Working with no control at all."""
-    tid = _esc(row["id"])
-    repo_name = _esc(Path(row["repo"]).name)
-    parts = [f"<div class='card' id='task-{tid}'>"]
-    title_html = f"<span class='title'>{_esc(row['title'])}</span>"
-    if row["origin"] == "system":
-        title_html += " <span class='badge system'>system</span>"
-    parts.append(f"<div>{title_html}</div>")
-    meta = [repo_name]
-    if position:
-        meta.append(f"queue #{position}")
-    if row["branch"]:
-        meta.append(f"branch <code>{_esc(row['branch'])}</code>")
-    if row["origin_run"]:
-        meta.append(f"discovered by <a href='/run/{_esc(row['origin_run'])}'>{_esc(row['origin_run'])}</a>")
-    parts.append(f"<div class='muted'>{' · '.join(meta)}</div>")
-    if row["note"]:
-        parts.append(f"<div class='muted'>{_esc(_short(row['note'], 160))}</div>")
-    if pause is not None:
-        parts.append(
-            f"<div><span class='badge waiting'>waiting on you</span> "
-            f"{_esc(_pause_headline(pause))} "
-            f"<a href='/pause/{int(pause['id'])}'>open →</a></div>"
-        )
-    if run_status == "running":
-        parts.append(
-            f"<div>{_badge('running')} <a href='/run/{_esc(row['latest_run'])}'>watch run</a></div>"
-        )
-    elif run_status:
-        parts.append(
-            f"<div>{_badge(run_status)} <a href='/run/{_esc(row['latest_run'])}'>run</a> "
-            f"<form method='post' action='/tasks/{tid}/rerun'>"
-            f"<button type='submit'>rerun</button></form></div>"
-        )
-    elif rerun:
-        parts.append(
-            f"<div><form method='post' action='/tasks/{tid}/rerun'>"
-            f"<button type='submit'>rerun</button></form></div>"
-        )
-    if row["pr_url"]:
-        run_link = (
-            f" · <a href='/run/{_esc(row['latest_run'])}'>run</a>" if row["latest_run"] else ""
-        )
-        parts.append(
-            f"<div><a href='{_esc(row['pr_url'])}'>PR</a>{run_link} · auto-archives on merge "
-            f"<form method='post' action='/tasks/{tid}/archive'>"
-            f"<button type='submit'>archive</button></form></div>"
-        )
-    if row["status"] == "backlog" and not row["runnable"]:
-        parts.append(
-            f"<form method='post' action='/tasks/{tid}/promote'>"
-            f"<button type='submit'>review &amp; run</button></form>"
-        )
-    if row["status"] == "backlog" and row["runnable"] and pause is None:
-        parts.append(
-            f"<form method='post' action='/tasks/{tid}/archive'>"
-            f"<button type='submit'>discard</button></form>"
-        )
-    parts.append("</div>")
-    return "".join(parts)
-
-
-def _new_task_form(board: Board) -> str:
-    if not board.repos:
-        return (
-            "<div class='newtask'><strong>New task</strong><p class='muted'>No repos configured — "
-            "add a <code>repos:</code> section to <code>config.yaml</code> (name + path, "
-            "optional per-repo <code>test_command</code>).</p></div>"
-        )
-    options = "".join(
-        f"<option value='{_esc(r['name'])}'>{_esc(r['name'])}</option>" for r in board.repos
-    )
-    return (
-        "<details class='newtask'><summary><strong>New task</strong></summary>"
-        "<form method='post' action='/tasks'>"
-        "<label>repo<br><select name='repo'>" + options + "</select></label><br>"
-        "<label>title<br><input type='text' name='title' required></label><br>"
-        "<label>what should be done<br><textarea name='prompt' rows='3'></textarea></label><br>"
-        "<button type='submit'>add to backlog</button>"
-        "</form></details>"
-    )
-
-
-def render_board(board: Board) -> str:
-    """The kanban: Backlog / Working / In PR columns plus a separate Archived section.
-
-    Reads on a query_only connection, like every render here. Cards show a
-    waiting badge while one of their pauses is open and the live run badge while
-    a run streams; the page auto-refreshes while anything is.
-    """
-    conn = ui_connect(board.db_path)
-    try:
-        backlog = conn.execute(
-            "SELECT * FROM tasks WHERE status = 'backlog' ORDER BY created_at, rowid"
-        ).fetchall()
-        working = conn.execute(
-            "SELECT * FROM tasks WHERE status = 'working' ORDER BY updated_at DESC"
-        ).fetchall()
-        in_pr = conn.execute(
-            "SELECT * FROM tasks WHERE status = 'in_pr' ORDER BY updated_at DESC"
-        ).fetchall()
-        archived = conn.execute(
-            "SELECT * FROM tasks WHERE status = 'archived' ORDER BY updated_at DESC LIMIT ?",
-            (ARCHIVED_LIMIT,),
-        ).fetchall()
-        waiting = {
-            r["task_id"]: r
-            for r in conn.execute("SELECT * FROM pauses WHERE status = 'waiting'").fetchall()
-        }
-        run_ids = [r["latest_run"] for r in working if r["latest_run"]]
-        marks = ",".join("?" for _ in run_ids)
-        settled: dict[str, str] = {}
-        if run_ids:
-            settled = {
-                r["id"]: r["status"]
-                for r in conn.execute(
-                    f"SELECT id, status FROM sessions WHERE id IN ({marks})", run_ids
-                ).fetchall()
+        The full page and the polled fragment (/fragment/board) both render
+        from this dict, so the two views cannot disagree. ``phase`` carries a
+        live run's open phase row (``ended_at IS NULL``) as a plain-English
+        label plus a unix epoch, so the card can tick elapsed time client-side
+        without asking the server again. A card with an open pause shows the
+        pause instead of the phase: the chain is still streaming but parked on
+        the owner, and that is what the card must say.
+        """
+        conn = ui_connect(self.db_path)
+        try:
+            backlog = conn.execute(
+                "SELECT * FROM tasks WHERE status = 'backlog' ORDER BY created_at, rowid"
+            ).fetchall()
+            working = conn.execute(
+                "SELECT * FROM tasks WHERE status = 'working' ORDER BY updated_at DESC"
+            ).fetchall()
+            in_pr = conn.execute(
+                "SELECT * FROM tasks WHERE status = 'in_pr' ORDER BY updated_at DESC"
+            ).fetchall()
+            archived = conn.execute(
+                "SELECT * FROM tasks WHERE status = 'archived' ORDER BY updated_at DESC LIMIT ?",
+                (ARCHIVED_LIMIT,),
+            ).fetchall()
+            archived_total = conn.execute(
+                "SELECT COUNT(*) AS n FROM tasks WHERE status = 'archived'"
+            ).fetchone()["n"]
+            waiting = {
+                r["task_id"]: r
+                for r in conn.execute("SELECT * FROM pauses WHERE status = 'waiting'").fetchall()
             }
-    finally:
-        conn.close()
+            run_ids = [r["latest_run"] for r in working if r["latest_run"]]
+            settled: dict[str, str] = {}
+            open_phases: dict[str, object] = {}
+            if run_ids:
+                marks = ",".join("?" for _ in run_ids)
+                settled = {
+                    r["id"]: r["status"]
+                    for r in conn.execute(
+                        f"SELECT id, status FROM sessions WHERE id IN ({marks})", run_ids
+                    ).fetchall()
+                }
+                live_ids = [rid for rid in run_ids if settled.get(rid) == "running"]
+                if live_ids:
+                    marks = ",".join("?" for _ in live_ids)
+                    for r in conn.execute(
+                        "SELECT run_id, name, started_at FROM phases"
+                        f" WHERE ended_at IS NULL AND run_id IN ({marks}) ORDER BY seq",
+                        live_ids,
+                    ).fetchall():
+                        open_phases[r["run_id"]] = r  # highest seq wins: the current phase
+        finally:
+            conn.close()
 
-    with board._lock:
-        live_workers = set(board._workers)
+        now = int(time.time())
+        with self._lock:
+            live_workers = set(self._workers)
 
-    positions: dict[str, int] = {}
-    per_repo: dict[str, int] = {}
-    for r in backlog:
-        if r["runnable"]:
-            per_repo[r["repo"]] = per_repo.get(r["repo"], 0) + 1
-            positions[r["id"]] = per_repo[r["repo"]]
+        positions: dict[str, int] = {}
+        per_repo: dict[str, int] = {}
+        for r in backlog:
+            if r["runnable"]:
+                per_repo[r["repo"]] = per_repo.get(r["repo"], 0) + 1
+                positions[r["id"]] = per_repo[r["repo"]]
 
-    def card(row, position=0):
-        run_status = ""
-        if row["latest_run"]:
-            status = settled.get(row["latest_run"])
-            if status == "running":
-                run_status = "running"
-            elif status:  # settled: failed, or accepted-but-not-delivered (declined)
-                run_status = status
-        # A claimed card with no bound run (pre-run failure, or a dead daemon's
-        # claim) still offers the rerun escape — unless a worker owns it now.
-        rerun = row["status"] == "working" and row["id"] not in live_workers
-        return _task_card(row, pause=waiting.get(row["id"]), run_status=run_status,
-                          rerun=rerun, position=position)
+        def card_dict(r) -> dict:
+            phase = None
+            run_status = ""
+            if r["latest_run"]:
+                status = settled.get(r["latest_run"])
+                if status == "running":
+                    run_status = "running"
+                    row = open_phases.get(r["latest_run"])
+                    if row is not None:
+                        epoch = started_epoch(row["started_at"])
+                        phase = {
+                            "name": row["name"],
+                            "label": phase_label(row["name"]),
+                            "started_epoch": epoch,
+                            "elapsed_s": max(0, now - epoch),
+                        }
+                elif status:
+                    # settled: failed, or accepted-but-not-delivered (declined)
+                    run_status = status
+            pause = waiting.get(r["id"])
+            return {
+                "id": r["id"],
+                "title": r["title"],
+                "repo": r["repo"],
+                "repo_name": Path(r["repo"]).name,
+                "status": r["status"],
+                "runnable": r["runnable"],
+                "note": r["note"],
+                "branch": r["branch"],
+                "pr_url": r["pr_url"],
+                "origin": r["origin"],
+                "origin_run": r["origin_run"],
+                "latest_run": r["latest_run"],
+                "updated_at": r["updated_at"],
+                "position": positions.get(r["id"], 0),
+                # A claimed card with no bound run (pre-run failure, or a dead
+                # daemon's claim) still offers the rerun escape — unless a
+                # worker owns it now.
+                "rerun": r["status"] == "working" and r["id"] not in live_workers,
+                "run_status": run_status,
+                "phase": phase,
+                "pause": (
+                    {"id": pause["id"], "type": pause["type"], "request": pause["request"]}
+                    if pause is not None
+                    else None
+                ),
+            }
 
-    def column(name: str, rows, render):
-        cards = "".join(render(r) for r in rows) or "<p class='muted'>empty</p>"
-        return f"<div class='col'><h2>{name} <span class='muted'>({len(rows)})</span></h2>{cards}</div>"
-
-    board_html = (
-        "<div class='board'>"
-        + column("Backlog", backlog, lambda r: card(r, positions.get(r["id"], 0)))
-        + column("Working", working, card)
-        + column("In PR", in_pr, card)
-        + "</div>"
-    )
-    rows = "".join(
-        f"<li>{_esc(r['title'])}"
-        + (f" — <a href='/run/{_esc(r['latest_run'])}'>run</a>" if r["latest_run"] else "")
-        + (f" — <a href='{_esc(r['pr_url'])}'>PR</a>" if r["pr_url"] else "")
-        + f" <span class='muted'>{_esc(r['note'])}</span></li>"
-        for r in archived
-    )
-    if not rows:
-        rows = "<li class='muted'>nothing archived yet</li>"
-    board_html += (
-        f"<details><summary class='muted'>Archived ({len(archived)})</summary>"
-        f"<ul>{rows}</ul></details>"
-    )
-
-    refresh = bool(working) or bool(waiting) or bool(run_ids)
-    return _board_page("factory board", _new_task_form(board) + board_html, refresh=refresh)
-
-
-def render_runs(board: Board) -> str:
-    conn = ui_connect(board.db_path)
-    try:
-        return render_index(conn)
-    finally:
-        conn.close()
-
-
-def render_run_page(board: Board, run_id: str) -> tuple[str, int]:
-    conn = ui_connect(board.db_path)
-    try:
-        return render_run(conn, run_id)
-    finally:
-        conn.close()
-
-
-def render_pause(board: Board, pause_id: str) -> tuple[str, int]:
-    """The owner's decision page for one parked card."""
-    try:
-        pid = int(pause_id)
-    except ValueError:
-        return _board_page("unknown pause", "<p>Bad pause id.</p>"), 404
-    conn = ui_connect(board.db_path)
-    try:
-        row = conn.execute("SELECT * FROM pauses WHERE id = ?", (pid,)).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        return _board_page("unknown pause", f"<p>No pause #{pid}.</p>"), 404
-
-    try:
-        req = json.loads(row["request"])
-    except ValueError:
-        req = {}
-    run_link = (
-        f" · run <a href='/run/{_esc(row['run_id'])}'><code>{_esc(row['run_id'])}</code></a>"
-        if row["run_id"] else ""
-    )
-    head = f"<p>task <code>{_esc(row['task_id'])}</code>{run_link} · opened {_esc(row['created_at'])} UTC</p>"
-
-    if row["status"] != "waiting":
-        body = (
-            head
-            + f"<p>{_badge(row['status'])}</p>"
-            + (f"<pre>{_esc(row['answer'])}</pre>" if row["answer"] else "")
-        )
-        return _board_page(f"pause #{pid}", body), 200
-
-    if row["type"] == "questions":
-        questions = req.get("questions") or []
-        qlist = "".join(f"<li>{_esc(q)}</li>" for q in questions)
-        body = (
-            head
-            + "<div class='summary'><p><strong>the planner asks:</strong></p>"
-            + f"<ul>{qlist}</ul></div>"
-            + f"<form method='post' action='/pause/{pid}'>"
-            + "<label>your answers<br><textarea name='answer' rows='5'></textarea></label><br>"
-            + "<button type='submit' name='action' value='send'>send answers</button> "
-            + "<button type='submit' name='action' value='reject'>cancel the task</button>"
-            + "</form>"
-        )
-    elif row["type"] == "plan_approval":
-        plan_text = str(req.get("plan") or "")
-        shown = (
-            plan_text if len(plan_text) <= 6000
-            else plan_text[:6000] + f"\n[+{len(plan_text) - 6000} chars omitted]"
-        )
-        body = (
-            head
-            + f"<div class='summary'><p><strong>plan</strong> "
-            + f"<code>{_esc(req.get('plan_path') or '-')}</code></p>"
-            + f"<pre>{_esc(shown)}</pre></div>"
-            + f"<form method='post' action='/pause/{pid}'>"
-            + "<button type='submit' name='action' value='approve'>approve — start building</button>"
-            + "<br><br>"
-            + "<label>or ask for changes<br><textarea name='answer' rows='4'></textarea></label><br>"
-            + "<button type='submit' name='action' value='send'>send corrections</button> "
-            + "<button type='submit' name='action' value='reject'>reject the plan</button>"
-            + "</form>"
-        )
-    elif row["type"] == "cleanup_approval":
-        body = (
-            head
-            + "<div class='summary'><p><strong>the failed run left these changes"
-            + " uncommitted</strong></p>"
-            + f"<pre>{_esc(req.get('pending') or '-')}</pre></div>"
-            + "<p class='muted'>Approving restores the tree (reset + clean, trace excluded);"
-            + " rejecting keeps every edit for you to dispose of by hand.</p>"
-            + f"<form method='post' action='/pause/{pid}'>"
-            + ("<button type='submit' name='action' value='approve'>"
-               "restore — discard the attempt's edits</button> ")
-            + "<button type='submit' name='action' value='reject'>keep them</button>"
-            + "</form>"
-        )
-    else:  # pr_approval
-        body = (
-            head
-            + "<div class='summary'><p><strong>what would land</strong></p>"
-            + f"<pre>{_esc(req.get('pending') or '-')}</pre></div>"
-            + "<p class='muted'>Approving commits the change on the task branch, pushes it,"
-            + " and opens the PR.</p>"
-            + f"<form method='post' action='/pause/{pid}'>"
-            + ("<button type='submit' name='action' value='approve'>"
-               "approve — push &amp; open PR</button> ")
-            + "<button type='submit' name='action' value='reject'>reject</button>"
-            + "</form>"
-        )
-    return _board_page(f"pause #{pid}", body), 200
+        return {
+            "backlog": [card_dict(r) for r in backlog],
+            "working": [card_dict(r) for r in working],
+            "in_pr": [card_dict(r) for r in in_pr],
+            "archived": [card_dict(r) for r in archived],
+            "archived_total": archived_total,
+            "live": bool(working) or bool(waiting),
+        }
 
 
 # --- http server -------------------------------------------------------------
@@ -1057,26 +839,52 @@ def make_board_handler(board: Board) -> type[BaseHTTPRequestHandler]:
             path = unquote(urlparse(self.path).path)
             try:
                 if path == "/":
-                    self._send(render_board(board), 200)
+                    self._send(kanban.render_board(board), 200)
                 elif path == "/runs":
-                    self._send(render_runs(board), 200)
+                    self._send(self._trace(runs.render_index), 200)
+                elif path.startswith("/static/"):
+                    name = path.removeprefix("/static/").strip("/")
+                    asset = static_asset(name)
+                    if asset is None:
+                        self._send(_not_found(path), 404)
+                    else:
+                        self._send_bytes(*asset)
+                elif path == "/fragment/board":
+                    self._send(kanban.board_fragment(board.board_snapshot()), 200)
+                elif path == "/fragment/runs":
+                    self._send(self._trace(runs.render_runs_fragment), 200)
+                elif path.startswith("/fragment/run/"):
+                    run_id = path.removeprefix("/fragment/run/").strip("/")
+                    body, code = (
+                        self._trace(lambda c: runs.render_run_fragment(c, run_id))
+                        if run_id
+                        else (_not_found(path), 404)
+                    )
+                    self._send(body, code)
                 elif path.startswith("/run/"):
                     run_id = path.removeprefix("/run/").strip("/")
                     body, code = (
-                        render_run_page(board, run_id) if run_id else (_not_found(path), 404)
+                        self._trace(lambda c: runs.render_run(c, run_id))
+                        if run_id
+                        else (_not_found(path), 404)
                     )
                     self._send(body, code)
                 elif path.startswith("/pause/"):
-                    body, code = render_pause(board, path.removeprefix("/pause/").strip("/"))
+                    body, code = kanban.render_pause(board, path.removeprefix("/pause/").strip("/"))
                     self._send(body, code)
                 else:
                     self._send(_not_found(path), 404)
             except Exception as exc:
                 # A rendering bug gets its own page, not a dropped connection.
-                self._send(
-                    _board_page("render error", f"<p>{_esc(type(exc).__name__)}: {_esc(exc)}</p>"),
-                    500,
-                )
+                self._send(page("render error", f"<p>{esc(type(exc).__name__)}: {esc(exc)}</p>"), 500)
+
+        def _trace(self, fn):
+            """Run a renderer that wants a read-only trace connection."""
+            conn = ui_connect(board.db_path)
+            try:
+                return fn(conn)
+            finally:
+                conn.close()
 
         def _same_origin(self) -> bool:
             """CSRF guard for every mutating endpoint.
@@ -1099,7 +907,7 @@ def make_board_handler(board: Board) -> type[BaseHTTPRequestHandler]:
         def do_POST(self):
             if not self._same_origin():
                 refused = "<p>Cross-site POST refused: the origin does not match the board.</p>"
-                self._send(_board_page("refused", refused), 403)
+                self._send(page("refused", refused), 403)
                 return
             path = unquote(urlparse(self.path).path)
             try:
@@ -1132,14 +940,11 @@ def make_board_handler(board: Board) -> type[BaseHTTPRequestHandler]:
                     return
                 self._redirect("/")
             except BoardHTTPError as exc:
-                self._send(_board_page("refused", f"<p>{_esc(exc)}</p>"), 400)
+                self._send(page("refused", f"<p>{esc(exc)}</p>"), 400)
             except ValueError as exc:  # unknown ids and other bad lookups
-                self._send(_board_page("refused", f"<p>{_esc(exc)}</p>"), 400)
+                self._send(page("refused", f"<p>{esc(exc)}</p>"), 400)
             except Exception as exc:
-                self._send(
-                    _board_page("action failed", f"<p>{_esc(type(exc).__name__)}: {_esc(exc)}</p>"),
-                    500,
-                )
+                self._send(page("action failed", f"<p>{esc(type(exc).__name__)}: {esc(exc)}</p>"), 500)
 
         def _create_task(self, field) -> None:
             title = field("title").strip()
@@ -1177,11 +982,15 @@ def make_board_handler(board: Board) -> type[BaseHTTPRequestHandler]:
                 pass
 
         def _send(self, body: str, code: int) -> None:
-            data = body.encode("utf-8")
+            self._send_bytes(body.encode("utf-8"), "text/html; charset=utf-8", code)
+
+        def _send_bytes(self, data: bytes, content_type: str, code: int = 200) -> None:
             try:
                 self.send_response(code)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(data)))
+                if content_type != "text/html; charset=utf-8":
+                    self.send_header("Cache-Control", "max-age=60")
                 self.end_headers()
                 self.wfile.write(data)
             except OSError:
@@ -1194,7 +1003,7 @@ def make_board_handler(board: Board) -> type[BaseHTTPRequestHandler]:
 
 
 def _not_found(path: str) -> str:
-    return _board_page("not found", f"<p>Unknown page <code>{_esc(path)}</code>.</p>")
+    return page("not found", f"<p>Unknown page <code>{esc(path)}</code>.</p>")
 
 
 def make_board_server(board: Board, port: int) -> ThreadingHTTPServer:
