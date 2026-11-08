@@ -68,6 +68,24 @@ def validate_config(cfg: dict) -> None:
             "it is each agent call's budget in seconds — planners thinking hard need more than 300"
         )
 
+    review = defaults.get("review", True)
+    if not isinstance(review, bool):
+        raise ConfigError(
+            f"defaults.review must be a boolean — unquoted on/off or true/false (got {review!r}); "
+            "do not quote it: YAML reads bare on/off as true/false"
+        )
+
+    lenses = defaults.get("review_lenses", ("review-conventions", "review-bugs"))
+    if (
+        not isinstance(lenses, (list, tuple))
+        or not lenses
+        or not all(isinstance(n, str) and n.strip() for n in lenses)
+    ):
+        raise ConfigError(
+            f"defaults.review_lenses must be a non-empty list of roster agent names (got {lenses!r}); "
+            "one reviewer per lens, e.g. [review-conventions, review-bugs]"
+        )
+
     repos = cfg.get("repos", [])
     if not isinstance(repos, list):
         raise ConfigError("repos must be a list of mappings (name, path, optional test_command)")

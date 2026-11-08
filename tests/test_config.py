@@ -82,3 +82,39 @@ def test_quoted_off_is_accepted(tmp_path):
     text = VALID.replace("thinking: medium", "thinking: 'off'")
     cfg = load_config(write(tmp_path, text))
     assert resolve_agent(cfg, None)["thinking"] == "off"
+
+
+def test_review_toggle_on_and_off_load_as_booleans(tmp_path):
+    on = VALID.replace("  thinking: medium\n", "  thinking: medium\n  review: on\n")
+    cfg = load_config(write(tmp_path, on))
+    assert cfg["defaults"]["review"] is True
+    off = VALID.replace("  thinking: medium\n", "  thinking: medium\n  review: off\n")
+    cfg = load_config(write(tmp_path, off))
+    assert cfg["defaults"]["review"] is False
+
+
+def test_quoted_review_toggle_is_rejected(tmp_path):
+    # A quoted "on" is a string, not a boolean — the gate would silently turn
+    # into a truthy string check. Bare on/off only.
+    quoted = VALID.replace("  thinking: medium\n", "  thinking: medium\n  review: 'on'\n")
+    with pytest.raises(ConfigError, match="must be a boolean"):
+        load_config(write(tmp_path, quoted))
+
+
+def test_review_lenses_load_from_roster(tmp_path):
+    # The lens roster lives in config (data, not Python); call sites read it.
+    custom = VALID.replace(
+        "  thinking: medium\n",
+        "  thinking: medium\n  review_lenses: [review-bugs]\n",
+    )
+    cfg = load_config(write(tmp_path, custom))
+    assert cfg["defaults"]["review_lenses"] == ["review-bugs"]
+
+
+def test_bad_review_lenses_are_rejected(tmp_path):
+    bad = VALID.replace("  thinking: medium\n", "  thinking: medium\n  review_lenses: 'review-bugs'\n")
+    with pytest.raises(ConfigError, match="review_lenses"):
+        load_config(write(tmp_path, bad))
+    empty = VALID.replace("  thinking: medium\n", "  thinking: medium\n  review_lenses: []\n")
+    with pytest.raises(ConfigError, match="review_lenses"):
+        load_config(write(tmp_path, empty))

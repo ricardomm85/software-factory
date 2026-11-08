@@ -38,7 +38,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .agent_pi import kill_live_agents
-from .chains import CheckpointDeclined, _git, _pending_changes_summary, run_plan_build_test
+from .chains import (
+    DEFAULT_REVIEW_LENSES,
+    CheckpointDeclined,
+    _git,
+    _pending_changes_summary,
+    run_plan_build_test,
+)
 from .config import resolve_agent, resolve_repos
 from .db import trace_exemptions
 from .envelope import extract_json
@@ -411,6 +417,23 @@ class Board:
             return
         self._set_task(task_id, branch=branch)
 
+        # defaults.review: on|off (default on) — the code-review gate that runs
+        # before the commit phase. Call sites name agents (roster rule): the
+        # lenses and scorer resolve here, the builder doubles as fixer inside the
+        # chain. A missing agent raises ConfigError, which the worker records on
+        # the card — honest fail-fast, not a silent skip.
+        review_kwargs: dict = {}
+        if bool(self.cfg["defaults"].get("review", True)):
+            review_kwargs = {
+                "review": True,
+                "reviewer_cfgs": [
+                    resolve_agent(self.cfg, n)
+                    for n in self.cfg["defaults"].get("review_lenses", DEFAULT_REVIEW_LENSES)
+                ],
+                "scorer_cfg": resolve_agent(self.cfg, "scorer"),
+                "review_base": f"origin/{default}",  # the task branch diff vs origin default
+            }
+
         holder: dict = {}
 
         def on_run(run) -> None:
@@ -465,6 +488,7 @@ class Board:
                 exempt_paths=exempt,
                 env_dir=self.config_dir,
                 timeout_s=int(self.cfg["defaults"].get("agent_timeout_s", 300)),
+                **review_kwargs,
             )
         except Exception as exc:
             # The run failed mid-chain; its uncommitted edits stay in the tree

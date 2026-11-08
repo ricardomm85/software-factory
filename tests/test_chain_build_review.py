@@ -195,3 +195,16 @@ def test_fixer_gate_violations_are_corrected_in_session(repo, tmp_path):
         "SELECT COUNT(*) FROM events WHERE type = 'fix_gate_violations'"
     ).fetchone()[0]
     assert violations == 1  # first attempt flagged, second attempt passed
+
+
+def test_max_rounds_below_one_fails_fast(repo, tmp_path):
+    # A review loop with no rounds could never accept; that is a caller bug —
+    # raise instead of settling the run with a synthetic "exhausted" verdict.
+    import pytest
+
+    conn = connect(tmp_path / "factory.db")
+    with pytest.raises(ValueError, match="max_rounds must be >= 1"):
+        run_build_review(
+            conn, repo_dir=repo, reviewer_cfgs=REVIEWERS, scorer_cfg=SCORER,
+            fixer_cfg=FIXER, max_rounds=0, agent_fn=StubAgent([]),
+        )
