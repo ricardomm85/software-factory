@@ -67,3 +67,14 @@ def test_max_concurrent_runs_defaults_to_one_and_validates(tmp_path):
         load(tmp_path, BASE.replace("  test_command: echo ok", "  test_command: echo ok\n  max_concurrent_runs: '2'"))
     ok = load(tmp_path, BASE.replace("  test_command: echo ok", "  test_command: echo ok\n  max_concurrent_runs: 3"))
     assert ok["defaults"]["max_concurrent_runs"] == 3
+
+
+def test_agent_timeout_s_defaults_to_300_and_validates(tmp_path):
+    cfg = load(tmp_path, BASE)
+    assert cfg["defaults"].get("agent_timeout_s", 300) == 300
+    with pytest.raises(ConfigError, match="integer >= 1"):
+        load(tmp_path, BASE.replace("  test_command: echo ok", "  test_command: echo ok\n  agent_timeout_s: 0"))
+    with pytest.raises(ConfigError, match="integer >= 1"):
+        load(tmp_path, BASE.replace("  test_command: echo ok", "  test_command: echo ok\n  agent_timeout_s: 'soon'"))
+    ok = load(tmp_path, BASE.replace("  test_command: echo ok", "  test_command: echo ok\n  agent_timeout_s: 600"))
+    assert ok["defaults"]["agent_timeout_s"] == 600

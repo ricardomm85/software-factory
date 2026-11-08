@@ -464,6 +464,7 @@ class Board:
                 launched_by="board",  # the startup reaper settles only runs the board launched
                 exempt_paths=exempt,
                 env_dir=self.config_dir,
+                timeout_s=int(self.cfg["defaults"].get("agent_timeout_s", 300)),
             )
         except Exception as exc:
             # The run failed mid-chain; its uncommitted edits stay in the tree

@@ -37,7 +37,7 @@ class StubAgent:
         self.calls = []
 
     def __call__(self, prompt, model, session_id=None, on_event=None, repo_dir=None, **kwargs):
-        self.calls.append({"prompt": prompt, "session_id": session_id})
+        self.calls.append({"prompt": prompt, "session_id": session_id, **kwargs})
         effect = self.side_effects.pop(0) if self.side_effects else None
         if effect is not None and repo_dir is not None:
             effect(Path(repo_dir))
@@ -325,3 +325,18 @@ def test_full_board_chain_questions_approval_and_pr(repo, tmp_path):
         "SELECT status FROM phases WHERE name = 'checkpoint'"
     ).fetchone()[0]
     assert cp == "pass"
+
+
+def test_agent_timeout_reaches_the_agent_layer(repo, tmp_path):
+    """defaults.agent_timeout_s travels the whole chain: run_plan_build_test
+    hands its timeout_s to every agent call it makes (planner + builder)."""
+    agent = StubAgent([PLAN_JSON, BUILD_JSON], side_effects=[write_plan, write_feature])
+    tests = StubTests([0])
+    conn = connect(tmp_path / "factory.db")
+    accepted, reason = run_plan_build_test(
+        conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
+        repo_dir=repo, agent_fn=agent, test_fn=tests, timeout_s=600,
+    )
+    assert accepted, reason
+    assert agent.calls, "the chain ran agents"
+    assert all(call.get("timeout_s") == 600 for call in agent.calls)

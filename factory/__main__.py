@@ -157,6 +157,10 @@ def cmd_plan_build_test(args) -> int:
             repo_dir=repo_dir,
             max_rounds=args.max_rounds,
             checkpoint_fn=checkpoint_fn,
+            timeout_s=int(
+                getattr(args, "agent_timeout", None)
+                or cfg["defaults"].get("agent_timeout_s", 300)
+            ),
             exempt_paths=_trace_exemptions(repo_dir, _db_path(cfg, args.config)),
             env_dir=config_dir,
         )
@@ -377,6 +381,12 @@ def main(argv: list[str] | None = None) -> int:
     p_pbt.add_argument("--builder", default="builder", help="Builder agent from the roster")
     p_pbt.add_argument("--test-command", default=None, help="Override the roster's test_command")
     p_pbt.add_argument("--max-rounds", type=int, default=3, help="Bounded fix rounds")
+    p_pbt.add_argument(
+        "--agent-timeout",
+        type=int,
+        default=None,
+        help="Seconds each agent call may run (default: defaults.agent_timeout_s, else 300)",
+    )
     p_pbt.add_argument(
         "--checkpoint",
         action=argparse.BooleanOptionalAction,
