@@ -60,6 +60,27 @@ def test_run_page_waterfall_errors_and_pi_counts(traced_db):
     assert "envelope_ok" in page                      # orchestrator timeline present
 
 
+def test_open_phase_shows_running_not_failed(traced_db):
+    """Phases are born fail: an open (streaming) phase must read as running,
+    not as an error — a live plan phase once looked 'failed' to the owner."""
+    from factory.db import connect
+    from factory.run import Run
+
+    db_path, _ = traced_db
+    conn = connect(db_path)
+    run = Run.create(conn, "live now", agent="a", model="m")
+    conn.execute(
+        "INSERT INTO phases (run_id, seq, name, kind, owner, status, started_at)"
+        " VALUES (?, 1, 'plan', 'agent', 'planner', 'fail', '2026-01-01T00:00:00+00:00')",
+        (run.id,),
+    )
+    conn.commit()
+    page, code = render_run(ui_connect(db_path), run.id)
+    assert code == 200
+    assert '<span class="badge running">running</span>' in page
+    assert '<span class="badge fail">fail</span>' not in page  # nothing failed
+
+
 def test_unknown_run_is_404(traced_db):
     db_path, _ = traced_db
     page, code = render_run(ui_connect(db_path), "nope")
