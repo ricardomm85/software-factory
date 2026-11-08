@@ -269,9 +269,6 @@ def test_trace_db_survives_gates_and_stays_out_of_commits(repo, tmp_path):
         assert "data/factory.db" not in pending
         return True
 
-    def approve(pending):
-        return True
-
     accepted, reason = run_plan_build_test(
         conn, "add a feature file", PLANNER_CFG, BUILDER_CFG, test_command="true",
         repo_dir=repo, agent_fn=StubAgent([PLAN_JSON, BUILD_JSON], side_effects=[write_plan, write_feature]),

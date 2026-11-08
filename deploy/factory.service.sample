@@ -1,0 +1,28 @@
+# systemd user service for the factory board — the always-on home PC deployment.
+#
+# Install (adjust paths to your machine first):
+#   cp deploy/factory.service.sample ~/.config/systemd/user/factory.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now factory
+#   journalctl --user -u factory -f
+#
+# The service binds 127.0.0.1 only. To open the board from another device keep
+# the loopback and use an SSH tunnel (or a Tailscale connection):
+#   ssh -L 8666:127.0.0.1:8666 this-host
+#
+# Restart=on-failure covers crashes; runs interrupted by a restart are settled
+# failed by the board's startup reaper (their cards wait in Working with a
+# rerun button).
+
+[Unit]
+Description=Personal software factory board
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/Projects/software-factory
+ExecStart=/usr/bin/env uv run --directory %h/Projects/software-factory factory serve --port 8666
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

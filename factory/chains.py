@@ -275,25 +275,47 @@ def run_plan_build_test(
     agent_fn=run_pi_streaming,
     test_fn=run_test_command,
     checkpoint_fn=None,
+    questions_fn=None,
+    plan_approval_fn=None,
+    deliver_fn=None,
+    on_run=None,
+    launched_by: str = "",
+    human_rounds: int = 4,
     exempt_paths: set[str] | None = None,
     env_dir: Path | None = None,
 ) -> tuple[bool, str]:
     """The standard chain: plan → plan gates → handoff → commit:plan → build/test rounds
-    → checkpoint → commit.
+    → checkpoint → commit → deliver.
 
     Lands the planner's plan commit and the builder's implementation commit (carrying the
     builder's proposed message) when the planner ships a plan file; degrades to a single
     implementation commit when it doesn't. ``checkpoint_fn`` (Phase 5) gates the final
     commit behind a human: it receives the pending-changes summary and returns approval;
     declining raises :class:`CheckpointDeclined` with the working tree left uncommitted
-    for the human to dispose of. ``exempt_paths`` (the trace db and its WAL sidecars)
-    is factory infrastructure: never agent debris, never rolled back, never committed.
-    Returns (accepted, reason).
+    for the human to dispose of.
+
+    The web gates (Phase 7) are optional and only fire when wired:
+    ``questions_fn`` receives the planner's ``questions`` list and returns the owner's
+    answers — the planner resumes the SAME session with them until it ships a plan
+    (bounded by ``human_rounds``). ``plan_approval_fn`` receives (plan_path, plan_text)
+    and returns None for approval or a correction string that re-enters the same
+    session. Both default to None: the CLI runs exactly as before, and a planner that
+    asks questions with nobody attached fails its gates honestly. ``deliver_fn``
+    (Phase 8) runs after the final commit inside a ``deliver`` phase; whatever it
+    returns is logged (e.g. ``{"pr_url": ...}``) — a raise fails the run. ``on_run``
+    fires the moment the run exists (the board uses it to bind the card to the run).
+    ``launched_by`` stamps who created the run ('' = the CLI, ``'board'`` = the serve
+    daemon) — the board's startup reaper settles only its own runs, never the CLI's
+    sharing the same trace db. Agents never run git themselves. ``exempt_paths`` (the trace db and its WAL
+    sidecars) is factory infrastructure: never agent debris, never rolled back,
+    never committed. Returns (accepted, reason).
     """
     run = Run.create(
         conn, request=f"plan-build-test: {request}", agent=planner_cfg["name"], model=planner_cfg["model"],
-        repo=str(repo_dir),
+        repo=str(repo_dir), launched_by=launched_by,
     )
+    if on_run is not None:
+        on_run(run)
     accepted = False
     reason = ""
     build_envelope: BuildOutput | None = None
@@ -302,9 +324,11 @@ def run_plan_build_test(
         instruction = (PROMPTS_DIR / "plan_instruction.md").read_text(encoding="utf-8")
         planner_prompt = instruction.replace("{{run_id}}", run.id).replace("{{request}}", request)
         with run.phase("plan", kind="agent", owner=planner_cfg["name"]) as phase:
-            plan_envelope = call_agent(
-                run, phase, planner_prompt, planner_cfg, output_type=PlanOutput,
-                agent_fn=agent_fn, repo_dir=repo_dir, env_dir=env_dir,
+            plan_envelope = _plan_with_human_gates(
+                run, phase, planner_prompt, planner_cfg, repo_dir,
+                agent_fn=agent_fn, env_dir=env_dir,
+                questions_fn=questions_fn, plan_approval_fn=plan_approval_fn,
+                max_human_rounds=human_rounds,
             )
         if plan_envelope.status != "success":
             # The planner decided the request is not actionable — do not nag it.
@@ -312,9 +336,38 @@ def run_plan_build_test(
             run.finish(accepted=False, reason=reason)
             return False, reason
 
-        # Gate the planner's work exactly like the builder's: the plan file must
-        # exist and be claimed, and nothing unclaimed survives (rolled back).
+        # Gate the planner's work exactly like the builder's — on every path.
+        # The plan file must exist and be claimed, and nothing unclaimed
+        # survives (rolled back): the no-plan early exit below runs the same
+        # gates so the Phase 2 rollback guarantee holds even when the planner
+        # wrote debris and then reported questions instead.
         plan_rel = plan_envelope.plan_path or (plan_envelope.artifacts[0] if plan_envelope.artifacts else "")
+        if plan_envelope.status == "success" and not plan_rel:
+            # "Success" without a plan file is a planner that either still asks
+            # questions or reports an empty success — either way the builder has
+            # nothing honest to implement. The gates still run (empty claims =
+            # everything the planner wrote is debris and gets rolled back), so
+            # the CLI path — which has no board worktree-restore net — keeps the
+            # writes boundary. The two question cases get honest causes: nobody
+            # wired to answer, or the human-rounds bound exhausted.
+            with run.phase("plan_gates", kind="code", owner="code") as phase:
+                empty_claim = BuildOutput(status="success", summary=plan_envelope.summary)
+                reports = [
+                    run_output_gate(empty_claim),
+                    artifacts_exist(empty_claim, repo_dir),
+                    diff_matches_claims(empty_claim, repo_dir, rollback=True, allow=exempt_paths),
+                ]
+                phase.log("gate_results", {r.gate: r.to_payload() for r in reports})
+            if plan_envelope.questions:
+                reason = (
+                    "planner returned questions but no one is wired to answer them"
+                    if questions_fn is None
+                    else f"planner is still asking questions after {human_rounds} human rounds"
+                )
+            else:
+                reason = "planner reported success without a plan path"
+            run.finish(accepted=False, reason=reason)
+            return False, reason
         plan_claim = BuildOutput(
             status=plan_envelope.status,
             summary=plan_envelope.summary,
@@ -400,12 +453,84 @@ def run_plan_build_test(
             sha = _git("rev-parse", "--short", "HEAD", repo_dir=repo_dir).stdout.strip()
             with run.phase("commit", kind="code", owner="git") as phase:
                 phase.log("commit", {"sha": sha, "message": message})
+            if deliver_fn is not None:
+                with run.phase("deliver", kind="code", owner="git") as phase:
+                    info = deliver_fn(run.id, message)
+                    phase.log("delivered", info)
     except BaseException as exc:
         run.finish(accepted=False, reason=f"{type(exc).__name__}: {exc}")
         raise
 
     run.finish(accepted=accepted, reason=reason)
     return accepted, reason
+
+
+def _plan_with_human_gates(
+    run: Run,
+    phase,
+    prompt: str,
+    planner_cfg: dict,
+    repo_dir: Path,
+    *,
+    agent_fn,
+    env_dir: Path | None,
+    questions_fn,
+    plan_approval_fn,
+    max_human_rounds: int,
+) -> PlanOutput:
+    """The planner loop behind the web gates (Phase 7).
+
+    Questions: while the planner answers with ``questions`` and someone is wired
+    to ask, the run parks, the owner's answers re-enter the SAME pi session, and
+    the planner tries again — bounded by ``max_human_rounds``. Plan approval: the
+    finished plan is shown; None means approved, a string is a correction that
+    also re-enters the session. With no gates wired the planner is called exactly
+    once and the loop bodies never run — the CLI behavior is unchanged, byte for
+    byte.
+    """
+    envelope = call_agent(
+        run, phase, prompt, planner_cfg, output_type=PlanOutput,
+        agent_fn=agent_fn, repo_dir=repo_dir, env_dir=env_dir,
+    )
+
+    rounds = 0
+    while (
+        questions_fn is not None
+        and envelope.status == "success"
+        and envelope.questions
+        and rounds < max_human_rounds
+    ):
+        rounds += 1
+        phase.log("planner_questions", {"round": rounds, "count": len(envelope.questions)})
+        answers = questions_fn(list(envelope.questions))
+        phase.log("planner_answers", {"round": rounds, "chars": len(answers)})
+        prompt = f"{prompt}\n\n{_correction('planner_answers', round=str(rounds), answers=answers)}"
+        envelope = call_agent(
+            run, phase, prompt, planner_cfg, output_type=PlanOutput,
+            agent_fn=agent_fn, repo_dir=repo_dir, env_dir=env_dir,
+        )
+
+    if plan_approval_fn is None or envelope.status != "success" or envelope.questions:
+        # Still-questioning after the bound (or failing) falls through: the plan
+        # gates decide honestly — no plan file, no pass.
+        return envelope
+
+    for round_no in range(1, max_human_rounds + 1):
+        plan_rel = envelope.plan_path or (envelope.artifacts[0] if envelope.artifacts else "")
+        plan_text = ""
+        if plan_rel and (repo_dir / plan_rel).is_file():
+            plan_text = (repo_dir / plan_rel).read_text(encoding="utf-8")
+        decision = plan_approval_fn(plan_rel, plan_text)
+        if decision is None:
+            phase.log("plan_approved", {"round": round_no})
+            return envelope
+        phase.log("plan_correction", {"round": round_no, "chars": len(decision)})
+        prompt = f"{prompt}\n\n{_correction('plan_correction', decision=decision)}"
+        envelope = call_agent(
+            run, phase, prompt, planner_cfg, output_type=PlanOutput,
+            agent_fn=agent_fn, repo_dir=repo_dir, env_dir=env_dir,
+        )
+    raise CheckpointDeclined(f"plan not approved after {max_human_rounds} rounds")
 
 
 def _working_tree_diff(repo_dir: Path, max_chars: int = 80000, exempt_paths: set[str] | None = None) -> str:

@@ -143,6 +143,22 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
+# Every in-flight pi subprocess, registered by run_pi_streaming. Daemon shutdown
+# must not leave agent children orphaned and burning tokens after their run row
+# is gone: Board.stop() kills them, each blocked chain unwinds, and every run
+# settles failed in the trace instead of hanging as an unowned 'running' row.
+_live_procs: set[subprocess.Popen] = set()
+_live_lock = threading.Lock()
+
+
+def kill_live_agents() -> None:
+    """Kill every in-flight pi subprocess (whole process group)."""
+    with _live_lock:
+        procs = list(_live_procs)
+    for proc in procs:
+        _kill_process_tree(proc)
+
+
 def run_pi_streaming(
     prompt: str,
     model: str,
@@ -177,6 +193,8 @@ def run_pi_streaming(
         cwd=str(repo_dir),
         start_new_session=True,  # lets the timeout kill the whole tree, not just pi
     )
+    with _live_lock:
+        _live_procs.add(proc)
 
     events: list[dict] = []
     stderr_lines: list[str] = []
@@ -216,6 +234,9 @@ def run_pi_streaming(
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_process_tree(proc)
+    finally:
+        with _live_lock:
+            _live_procs.discard(proc)
     pump.join(timeout=5)
     err_pump.join(timeout=5)
     stderr = "".join(stderr_lines)
