@@ -53,12 +53,16 @@ class Run:
         self.id = run_id
 
     @classmethod
-    def create(cls, conn, request: str, agent: str, model: str, repo: str = "") -> "Run":
+    def create(cls, conn, request: str, agent: str, model: str, repo: str = "",
+               launched_by: str = "") -> "Run":
+        """``launched_by`` stamps the creator — '' (CLI commands) or 'board'
+        (factory serve) — so the board's startup reaper settles only the runs
+        it launched, never CLI runs sharing the same trace db."""
         run_id = new_run_id()
         conn.execute(
-            "INSERT INTO sessions (id, request, status, agent, model, repo, started_at)"
-            " VALUES (?, ?, 'running', ?, ?, ?, ?)",
-            (run_id, request, agent, model, repo, _now()),
+            "INSERT INTO sessions (id, request, status, agent, model, repo, launched_by, started_at)"
+            " VALUES (?, ?, 'running', ?, ?, ?, ?, ?)",
+            (run_id, request, agent, model, repo, launched_by, _now()),
         )
         conn.commit()
         return cls(conn, run_id)

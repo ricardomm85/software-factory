@@ -54,6 +54,33 @@ def validate_config(cfg: dict) -> None:
     if test_command is not None and (not isinstance(test_command, str) or not test_command.strip()):
         raise ConfigError("defaults.test_command must be a non-empty string (the real one, not a placeholder)")
 
+    cap = defaults.get("max_concurrent_runs", 1)
+    if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+        raise ConfigError(
+            f"defaults.max_concurrent_runs must be an integer >= 1 (got {cap!r}); "
+            "it caps simultaneous runs globally — size it to the box's RAM"
+        )
+
+    repos = cfg.get("repos", [])
+    if not isinstance(repos, list):
+        raise ConfigError("repos must be a list of mappings (name, path, optional test_command)")
+    seen_repos: set[str] = set()
+    for i, entry in enumerate(repos):
+        if not isinstance(entry, dict):
+            raise ConfigError(f"repos[{i}] must be a mapping with 'name' and 'path'")
+        name = entry.get("name")
+        if not name or not isinstance(name, str):
+            raise ConfigError(f"repos[{i}] must have a non-empty string 'name'")
+        if name in seen_repos:
+            raise ConfigError(f"duplicate repo name: {name!r}")
+        seen_repos.add(name)
+        repo_path = entry.get("path")
+        if not repo_path or not isinstance(repo_path, str):
+            raise ConfigError(f"repos.{name} must have a non-empty string 'path'")
+        repo_test = entry.get("test_command")
+        if repo_test is not None and (not isinstance(repo_test, str) or not repo_test.strip()):
+            raise ConfigError(f"repos.{name}.test_command must be a non-empty string when given")
+
     agents = cfg.get("agents")
     if not isinstance(agents, list) or not agents:
         raise ConfigError("missing required section: agents (non-empty list)")
@@ -115,3 +142,22 @@ def resolve_agent(cfg: dict, name: str | None = None) -> dict:
             }
     known = ", ".join(a["name"] for a in cfg.get("agents", []))
     raise ConfigError(f"unknown agent {name!r} (known agents: {known})")
+
+
+def resolve_repos(cfg: dict) -> list[dict]:
+    """The board's repo list: name, resolved path, effective test command.
+
+    ``test_command`` falls back to ``defaults.test_command`` — the roster default
+    is the real suite, a per-repo entry overrides it. Paths are expanded and
+    resolved so cards, the trace and the repo always agree on one spelling.
+    """
+    defaults = cfg["defaults"]
+    out = []
+    for entry in cfg.get("repos", []):
+        test_command = entry.get("test_command") or defaults.get("test_command") or ""
+        out.append({
+            "name": entry["name"],
+            "path": Path(entry["path"]).expanduser().resolve(),
+            "test_command": test_command,
+        })
+    return out

@@ -5,6 +5,7 @@ Commands:
   factory build-test "<prompt>" builder + code(test) with a bounded fix loop (gates + rollback)
   factory build-review          multi-lens review of the working-tree changes (gates + fix rounds)
   factory ui                    read-only local web UI over the trace (runs, phase waterfall)
+  factory serve                 the board: create tasks, watch runs, answer pauses (loopback)
   factory sessions              list traced runs
   factory phases <run_id>       list phases of one run
   factory prompt "<prompt>"     raw one-shot agent call, no trace (debug helper)
@@ -18,7 +19,7 @@ from pathlib import Path
 from .agent_pi import run_pi
 from .chains import run_build_review, run_build_test, run_plan_build_test, _stdin_checkpoint
 from .config import ConfigError, load_config, resolve_agent
-from .db import connect
+from .db import connect, trace_exemptions as _trace_exemptions
 from .envelope import RunOutput
 from .run import AgentPhaseError, Run, call_agent
 from .ui import fmt_duration, make_server
@@ -50,25 +51,6 @@ def _resolve_repo(args) -> tuple[Path, Path]:
     # in the trace's repo column, never "." vs absolute paths.
     repo_dir = (Path(repo_arg) if repo_arg else config_dir).resolve()
     return repo_dir, config_dir
-
-
-def _trace_exemptions(repo_dir: Path, db_path: Path) -> set[str]:
-    """Trace db + WAL sidecars as repo-relative posix paths.
-
-    The writes boundary (gate rollbacks, ``git add -A``, reviewer diffs) must
-    never treat the factory's own trace as agent debris: a ``git clean`` here
-    deletes the trace mid-run and the open connection keeps writing to an
-    unlinked inode — the trace is lost silently (surfaced live in Phase 5).
-    """
-    try:
-        rel = db_path.resolve().relative_to(repo_dir.resolve())
-    except ValueError:
-        return set()
-    return {
-        rel.as_posix(),
-        (rel.parent / f"{rel.name}-wal").as_posix(),
-        (rel.parent / f"{rel.name}-shm").as_posix(),
-    }
 
 
 def cmd_run(args) -> int:
@@ -268,6 +250,42 @@ def cmd_ui(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    """The board: a long-lived daemon that owns execution (Phases 6-8)."""
+    cfg = _load_config(args.config)
+    db_path = _db_path(cfg, args.config)
+    config_dir = args.config.parent
+    if not 0 < args.port <= 65535:
+        print(f"invalid port {args.port}: must be 1-65535", file=sys.stderr)
+        return 2
+
+    from .board import Board, make_board_server  # local import: heavy module, board users only
+
+    conn = connect(db_path)
+    board = Board(conn, cfg, config_dir=config_dir, db_path=db_path)
+    try:
+        server = make_board_server(board, args.port)
+    except OSError as exc:
+        print(f"cannot serve on port {args.port}: {exc}", file=sys.stderr)
+        return 2
+    board.start()
+    repos = ", ".join(r["name"] for r in board.repos) or "(no repos configured — add a repos: section)"
+    print(
+        f"factory board → http://127.0.0.1:{args.port}/  (db: {db_path})\n"
+        f"  repos: {repos}\n"
+        f"  max concurrent runs: {board._cap} — Ctrl+C to stop"
+    )
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopping — open pauses expire, runs settle failed in the trace")
+    finally:
+        board.stop()
+        server.server_close()
+        conn.close()
+    return 0
+
+
 def cmd_sessions(args) -> int:
     cfg = _load_config(args.config)
     conn = connect(_db_path(cfg, args.config))
@@ -393,6 +411,14 @@ def main(argv: list[str] | None = None) -> int:
     p_ui.add_argument("--port", type=int, default=8666, help="Local port to serve on")
     p_ui.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
     p_ui.set_defaults(func=cmd_ui)
+
+    p_serve = sub.add_parser(
+        "serve",
+        help="the task board: create tasks, watch runs, answer pauses (binds 127.0.0.1 only)",
+    )
+    p_serve.add_argument("--port", type=int, default=8666, help="Local port to serve on")
+    p_serve.add_argument("--config", type=Path, default=argparse.SUPPRESS, help="Roster config path")
+    p_serve.set_defaults(func=cmd_serve)
 
     p_sessions = sub.add_parser("sessions", help="list traced runs")
     p_sessions.add_argument("--limit", type=int, default=20)

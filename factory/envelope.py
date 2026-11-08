@@ -31,24 +31,43 @@ class RunOutput(EnvelopeBase):
     """Output type for a Phase 1 one-shot agent run."""
 
 
+class PlanOutput(EnvelopeBase):
+    """Output type for planner phases: a plan file another agent can implement
+    without asking questions. The plan's path is declared both in ``plan_path``
+    and in ``artifacts`` — the artifacts gate verifies it exists and is non-empty.
+
+    ``questions`` (Phase 7) is how the planner raises doubts instead of guessing:
+    a non-empty list parks the run for the owner, whose answers re-enter the same
+    session. A planner that questions nothing delivers ``[]``.
+    """
+
+    plan_path: str = ""
+    questions: list[str] = Field(default_factory=list)
+
+
+class DiscoveredItem(BaseModel):
+    """One out-of-scope finding the agent wants on the owner's radar.
+
+    These must NOT be fixed inside the current PR — the fixer and the gates may
+    not absorb them. Deterministic code turns them into Backlog cards.
+    """
+
+    title: str = ""
+    detail: str = ""
+
+
 class BuildOutput(EnvelopeBase):
     """Output type for builder phases: the agent claims every file it changed.
 
     ``changed_files`` is what the diff gate verifies against; ``commit_message``
     is a proposal the code side may use — the agent never runs git itself.
+    ``discovered`` lists findings outside the task's scope (Phase 8): they become
+    system-created Backlog cards, never part of this change.
     """
 
     changed_files: list[str] = Field(default_factory=list)
     commit_message: str = ""
-
-
-class PlanOutput(EnvelopeBase):
-    """Output type for planner phases: a plan file another agent can implement
-    without asking questions. The plan's path is declared both in ``plan_path``
-    and in ``artifacts`` — the artifacts gate verifies it exists and is non-empty.
-    """
-
-    plan_path: str = ""
+    discovered: list[DiscoveredItem] = Field(default_factory=list)
 
 
 class Finding(BaseModel):
@@ -61,9 +80,15 @@ class Finding(BaseModel):
 
 
 class FindingsOutput(EnvelopeBase):
-    """Output type for reviewer phases: the issues found in the reviewed changes."""
+    """Output type for reviewer phases: the issues found in the reviewed changes.
+
+    ``discovered`` carries out-of-scope observations (Phase 8) — real issues the
+    reviewer sees that must not enter the change under review; they become
+    Backlog cards with provenance instead of scope creep.
+    """
 
     findings: list[Finding] = Field(default_factory=list)
+    discovered: list[DiscoveredItem] = Field(default_factory=list)
 
 
 class ScoredFinding(Finding):

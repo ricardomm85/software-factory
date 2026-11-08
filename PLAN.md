@@ -1,6 +1,6 @@
 # Plan — Personal Software Factory
 
-**Date:** 2026-11-07 · **Status:** Phases 0–5 closed — v1 shipped and observable. **Pivot (2026-11-07): the web board takes over as the primary interface** (see the Phase 6–8 design note) — remaining: Phase 6 task board · Phase 7 web human gates · Phase 8 PR delivery + discovered work · Phase 9 scale · **Workspace:** `~/Projects/software-factory`
+**Date:** 2026-11-08 · **Status:** Phases 0–8 closed — the factory is a product: an always-on board at `factory serve` that plans, builds, tests, reviews, asks, and ships PRs. Remaining: Phase 9 (scale, when it hurts) · **Workspace:** `~/Projects/software-factory`
 
 ## 1. Goal
 
@@ -242,17 +242,15 @@ Rules specific to self-hosting:
 
 ## 9. Next step
 
-**Pivot (2026-11-07) — the board becomes the product.** After shipping and using v1 from
-the terminal, the owner redefined the interface: tasks are created and directed from the
-local web board — columns **Backlog / Working / In PR** plus a separate **Archived**
-section — the factory parks cards to ask (plan questions, plan approval, PR approval),
-and delivery means an open PR. Findings that must not enter the current PR become
-system-created Backlog cards for the owner to review and plan. Decisions in §2, design
-in the Phase 6–8 note; the old Phase 6 (scale) is demoted to Phase 9. The daemon is
-meant to end up running on an always-on home PC serving many repos (deployment and
-the RAM run-cap in the design note).
-**Next: Phase 6 (task board)** — tasks schema, `repos:` roster section, `factory serve`
-daemon with a per-repo FIFO queue and a global run cap, create-task form, kanban view.
+**Pivot (2026-11-07) — RESOLVED (2026-11-08): Phases 6, 7 and 8 shipped together in
+one PR — see the board closure note above.** The board is now the primary interface:
+tasks are created and directed from the local web board (columns **Backlog / Working /
+In PR** plus a separate **Archived** section), the factory parks cards to ask (plan
+questions, plan approval, PR approval), and delivery means an open PR. The old
+Phase 6 (scale) is Phase 9.
+**Next: Phase 9 (scale, when it hurts)** — Docker sandbox, external triggers,
+multi-run parallelism per repo, self-improvement. Each item enters only when a real
+need arrives; nothing is scheduled.
 
 **Phase 0 — CLOSED (2026-11-07).** Shipped: the `factory/` package (`config.py` roster
 loader + validator, `agent_pi.py` pi spawner with subprocess env injection, `env.py`
@@ -412,6 +410,89 @@ plus its WAL sidecars from every gate rollback, from both commits (`git reset -q
 in an ignore-free repo and a fresh connection reads the full trace while no commit
 carries `data/`. Verified live: the no-TTY smoke leaves run `e0e4a6f4` with all 7 phases
 recorded (844 pi events) and the plan commit carries only `specs/<run>-plan.md`.
+
+### Closure note — the board: Phases 6, 7 and 8 in one hull (added 2026-11-08)
+
+Phases 6–8 shipped together in one PR (the owner's call: the board is one product,
+not three increments). `factory serve` is now the long-lived daemon the PLAN
+described: kanban at loopback with columns **Backlog / Working / In PR** plus a
+separate Archived section, a create-task form fed by the roster's `repos:` section,
+one worker per repo (FIFO within a repo, repos concurrent, `max_concurrent_runs`
+as the global RAM cap), and the Phase-4 run detail behind every card.
+
+- **Phase 6 — the queue.** `tasks` table (cards with `origin owner|system`,
+  `runnable`, `branch`, `pr_url`, provenance `origin_run`). The dispatcher claims
+  one runnable card per repo, FIFO by `created_at, rowid` — rowid is the true
+  insertion order; same-second `created_at` ties would otherwise shuffle the queue.
+  System cards land unrunnable: the factory proposes, the owner promotes.
+- **Phase 7 — pauses as rows.** `pauses` table (`questions | plan_approval |
+  pr_approval`, request/answer/status). The chain's human-gate callbacks block on
+  an event bound to the pause row; the owner answers from the browser and the SAME
+  pi session resumes (`{run}-planner` on both sides of a correction, verified live).
+  The planner's envelope gained `questions`; asking with nobody wired fails the
+  plan gates honestly. The stdin checkpoint stays CLI-only.
+- **Phase 8 — delivery + discovered work.** Branch per task cut from
+  `origin/<default>` after a fetch (never from HEAD — the previous task's branch —
+  nor from a stale local default; `checkout -B` resets a rerun's stale branch even
+  when it is the checked-out one). On the PR-approval pause: commit, push,
+  `gh pr create`, card to In PR; merged PRs auto-archive (poller). Envelopes gained
+  `discovered` — out-of-scope findings become Backlog cards with `origin_run`
+  provenance, deduped per repo+title. Agents never run git; neither does anything
+  outside these deterministic code paths.
+- **Crash honesty.** Startup reaper settles runs a dead daemon left `running`,
+  fails their open phases, expires their waiting pauses, flags their cards for a
+  rerun. Shutdown expires open pauses so workers unwind and runs settle failed
+  instead of hanging forever. Deployment: `deploy/factory.service.sample` (systemd
+  user service, loopback + SSH tunnel/Tailscale).
+
+Live verification: two real runs through the board — a demo repo task
+(plan approval → build/test → PR approval → push OK → `gh pr create` fails
+honestly against a non-GitHub origin: the card shows the error and a rerun button),
+and a task against a clean clone of this very repo: plan approved from the board,
+pytest green, PR approved, **PR opened on GitHub** (ricardomm85/software-factory#7)
+and the card settled in In PR. A live plan correction re-entered the same planner
+session and the corrected plan incorporated the owner's constraint. The questions
+pause is exercised by tests (round trip, same-session resume, bounded loop,
+CLI-without-questions); live, both planners judged the requests answerable and
+planned straight away. 147 tests passing (44 new).
+
+Dogfood: the pre-PR gate ran the full review→score→gate→fix loop FOUR times to a
+verdict (six runs total; two flaked on lens timeouts against this ~2k-line diff —
+an operational finding for Phase 9, recorded at the end). First verdict: 4 findings ≥50 —
+duplicated `BuildOutput` definitions (silently shadowed), planner prompt text
+hardcoded in Python against the prompts-as-data rule, a rerun stalling on its own
+branch, and branches cut from an un-fetched local default. The fixer resolved the
+first three in-session (prompts became `planner_answers.md`/`plan_correction.md`
+templates via `_correction`, exactly the repo convention); the stale-base finding
+survived re-review at 90 and was fixed by hand (fetch + `origin/<default>` +
+`checkout -B`). Second verdict: 3 more ≥50 — a misleading failure message when the
+question rounds exhaust, failed/declined runs leaving the target repo dirty so the
+rerun button hit a clean-tree wall forever, and `discovered` findings dropped when
+the chain raised instead of returning. The fixer took all three: the board now
+restores the worktree it dirtied (deterministic git, exempt paths preserved — a
+decline discards the attempt, whose trace stays in the run), collects discovered
+cards in a `finally`, and tells the two question cases apart. Re-review kept one
+finding (90): a rerun after a partial delivery (push OK, `gh` failed) could never
+push again — non-fast-forward against the previous attempt's branch. Fixed by hand:
+`push --force-with-lease` on the board-owned ref. Third verdict: 3 more ≥50 — cards
+failing preflight stuck in Working with no action button, the startup reaper owning
+runs it did not launch (now stamped `sessions.launched_by` and filtered), and real
+CSRF: any website the owner browses could POST to the loopback board and resolve a
+pause the owner never saw (refused by an Origin/Host check on every mutating
+endpoint; curl and scripts pass). Re-review kept one finding (85): daemon shutdown
+neither stopped nor settled in-flight agent subprocesses — fixed by hand with a
+`kill_live_agents()` registry in `agent_pi` wired into `Board.stop()`. Fourth
+verdict: 1 finding ≥50, scored 95 and REPRODUCED live — the one shared sqlite
+connection ran across the dispatcher, per-repo workers, each worker's pi event
+pump thread, the poller and the HTTP handlers; CPython's sqlite3 is not safe for
+that (statement cache races, interleaved implicit transactions), and the board's
+own suite flaked on it. The fixer closed it in-cycle with `LockedConnection` —
+every statement executes and materializes under one lock, the cursor frozen before
+release — plus the ownership migration. Final verdict: **accepted, no findings
+scored >=50**. 157 tests passing (54 new). Operational note for Phase 9: the
+review-bugs lens needs generous timeouts on diffs this size — two of the six runs
+died on it — so Phase 9 should design a bounded review surface or a lens timeout
+budget before scaling the board.
 
 ## References
 

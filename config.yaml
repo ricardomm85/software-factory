@@ -7,6 +7,14 @@ defaults:
   data_dir: data                   # runtime trace + sessions (gitignored)
   test_command: uv run pytest -q   # the real suite for code(test) phases — never a placeholder
   checkpoint: false                # ask the human before the final commit lands (plan-build-test)
+  max_concurrent_runs: 1           # global cap on simultaneous runs — size it to the box's RAM
+                                   # (the target repos' Chrome E2E suites are the heavy part)
+
+# The board (factory serve) offers exactly these repos, by name.
+# test_command is optional per repo and falls back to defaults.test_command.
+repos:
+  - name: software-factory
+    path: ~/Projects/software-factory
 
 agents:
   - name: scout
